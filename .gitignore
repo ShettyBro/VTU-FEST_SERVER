@@ -1,0 +1,8 @@
+# Environment variables
+.env
+Local.env
+debug-jwt.js
+neon DB quires.md
+
+# Node modules
+node_modules/
