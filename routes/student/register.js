@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
+const nodeCrypto = require('crypto');
 const pool = require('../../db/pool');
 const { BlobServiceClient, generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require('@azure/storage-blob');
 
@@ -137,7 +137,7 @@ router.post('/', async (req, res) => {
       }
 
       const college_code = collegeResult.rows[0].college_code;
-      const session_id = crypto.randomBytes(32).toString('hex');
+      const session_id = nodeCrypto.randomBytes(32).toString('hex');
       const expires_at = new Date(Date.now() + SESSION_EXPIRY_MINUTES * 60 * 1000);
 
       await client.query(
