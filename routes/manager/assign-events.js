@@ -7,7 +7,7 @@ const checkCollegeLock = require('../../middleware/checkCollegeLock');
 const { success, error, validationError } = require('../../utils/response');
 
 // ============================================================================
-// EVENT SLUG TO TABLE MAPPING (25 EVENTS)
+// EVENT SLUG TO TABLE MAPPING (25 EVENTS) - ✅ FIXED: MATCHING NEON DB
 // ============================================================================
 const EVENT_TABLES = {
   'mime': 'event_mime',
@@ -26,14 +26,14 @@ const EVENT_TABLES = {
   'rangoli': 'event_rangoli',
   'spot_photography': 'event_spot_photography',
   'classical_vocal_solo': 'event_classical_vocal_solo',
-  'classical_instrumental_percussion': 'event_classical_instrumental_percussion',
-  'classical_instrumental_non_percussion': 'event_classical_instrumental_non_percussion',
+  'classical_instrumental_percussion': 'event_classical_instr_percussion',       // ✅ FIXED: ABBREVIATED
+  'classical_instrumental_non_percussion': 'event_classical_instr_non_percussion', // ✅ FIXED: ABBREVIATED
   'light_vocal_solo': 'event_light_vocal_solo',
   'western_vocal_solo': 'event_western_vocal_solo',
   'group_song_indian': 'event_group_song_indian',
   'group_song_western': 'event_group_song_western',
   'folk_orchestra': 'event_folk_orchestra',
-  'folk_tribal_dance': 'event_folk_tribal_dance',
+  'folk_tribal_dance': 'event_folk_dance',  // ✅ FIXED: folk_tribal_dance → folk_dance
   'classical_dance_solo': 'event_classical_dance_solo',
 };
 

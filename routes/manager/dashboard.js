@@ -78,7 +78,7 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), async (req
     const accompanists_count = parseInt(accompanistsResult.rows[0].total);
 
     // 7. COUNT PARTICIPATING EVENTS (DISTINCT EVENTS WITH PARTICIPANTS)
-    // Each event is counted ONCE if college has at least 1 participant
+    // ✅ FIXED: Using CORRECT table names from Neon DB
     const participatingEventsResult = await pool.query(
       `SELECT (
         CASE WHEN EXISTS (
@@ -97,12 +97,12 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), async (req
         ) THEN 1 ELSE 0 END +
         
         CASE WHEN EXISTS (
-          SELECT 1 FROM event_classical_instrumental_percussion 
+          SELECT 1 FROM event_classical_instr_percussion 
           WHERE college_id = $1 AND event_type = 'PARTICIPANT'
         ) THEN 1 ELSE 0 END +
         
         CASE WHEN EXISTS (
-          SELECT 1 FROM event_classical_instrumental_non_percussion 
+          SELECT 1 FROM event_classical_instr_non_percussion 
           WHERE college_id = $1 AND event_type = 'PARTICIPANT'
         ) THEN 1 ELSE 0 END +
         
@@ -122,7 +122,7 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), async (req
         ) THEN 1 ELSE 0 END +
         
         CASE WHEN EXISTS (
-          SELECT 1 FROM event_folk_tribal_dance 
+          SELECT 1 FROM event_folk_dance 
           WHERE college_id = $1 AND event_type = 'PARTICIPANT'
         ) THEN 1 ELSE 0 END +
         

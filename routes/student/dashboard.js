@@ -1,22 +1,22 @@
 // routes/student/dashboard.js
+const express = require('express');
+const router = express.Router();
 const pool = require('../../db/pool');
+const { authenticate } = require('../../middleware/auth');
+const requireRole = require('../../middleware/requireRole');
+const { success, error } = require('../../utils/response');
 
-module.exports = async (req, res) => {
-  // ✅ FIX: Check if req.user exists BEFORE accessing properties
-  if (!req.user || !req.user.student_id) {
-    return res.status(401).json({
-      success: false,
-      message: 'Token expired. Redirecting to login...',
-      redirect: 'https://vtufest2026.acharyahabba.com/',
-    });
-  }
-
-  const student_id = req.user.student_id;
-
-  const client = await pool.connect();
-
+// ============================================================================
+// POST /api/student/dashboard
+// Get student dashboard data (application status, documents, QR code)
+// ============================================================================
+router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
   try {
-    const studentResult = await client.query(
+    // ✅ Use req.user.student_id set by auth middleware
+    const student_id = req.user.student_id;
+
+    // Fetch student details
+    const studentResult = await pool.query(
       `SELECT 
          id,
          usn,
@@ -31,18 +31,16 @@ module.exports = async (req, res) => {
     );
 
     if (studentResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Student not found',
-      });
+      return error(res, 'Student not found', 404);
     }
 
     const studentData = studentResult.rows[0];
 
+    // Fetch application data
     let applicationData = null;
     let documents = [];
 
-    const applicationResult = await client.query(
+    const applicationResult = await pool.query(
       `SELECT
          id,
          status,
@@ -64,7 +62,8 @@ module.exports = async (req, res) => {
         submitted_at: app.submitted_at,
       };
 
-      const documentsResult = await client.query(
+      // Fetch application documents
+      const documentsResult = await pool.query(
         `SELECT
            document_type,
            document_url
@@ -76,9 +75,10 @@ module.exports = async (req, res) => {
       documents = documentsResult.rows;
     }
 
+    // Fetch QR code (if final approval done)
     let qrCode = null;
 
-    const qrResult = await client.query(
+    const qrResult = await pool.query(
       `SELECT qr_code
        FROM final_event_participants_master
        WHERE student_id = $1
@@ -92,34 +92,26 @@ module.exports = async (req, res) => {
       qrCode = qrResult.rows[0].qr_code;
     }
 
-    const response = {
-      success: true,
-      data: {
-        student: {
-          id: studentData.id,
-          usn: studentData.usn,
-          full_name: studentData.full_name,
-          college_id: studentData.college_id,
-          email: studentData.email,
-          phone: studentData.phone,
-        },
-        application: applicationData,
-        documents: documents,
-        reapply_count: studentData.reapply_count,
-        qr_code: qrCode,
+    // Build response
+    return success(res, {
+      student: {
+        id: studentData.id,
+        usn: studentData.usn,
+        full_name: studentData.full_name,
+        college_id: studentData.college_id,
+        email: studentData.email,
+        phone: studentData.phone,
       },
-    };
-
-    return res.status(200).json(response);
-  } catch (error) {
-    console.error('Dashboard API error:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to load dashboard data. Please refresh the page.',
-      autoRetry: true,
+      application: applicationData,
+      documents: documents,
+      reapply_count: studentData.reapply_count,
+      qr_code: qrCode,
     });
-  } finally {
-    client.release();
+
+  } catch (err) {
+    console.error('Student dashboard error:', err);
+    return error(res, 'Failed to load dashboard data', 500);
   }
-};
+});
+
+module.exports = router;
