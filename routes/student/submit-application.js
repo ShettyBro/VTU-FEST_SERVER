@@ -75,7 +75,8 @@ module.exports = async (req, res) => {
   const client = await pool.connect();
 
   try {
-    if (action === 'init') {
+    // ✅ FIXED: Changed from 'init' to 'init_application' to match frontend
+    if (action === 'init_application') {
       const studentResult = await client.query(
         'SELECT usn, reapply_count FROM students WHERE id = $1',
         [student_id]
@@ -84,7 +85,7 @@ module.exports = async (req, res) => {
       if (studentResult.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: 'Student not found',
+          error: 'Student not found',
         });
       }
 
@@ -106,21 +107,21 @@ module.exports = async (req, res) => {
         if (existingApp.status === 'APPROVED') {
           return res.status(400).json({
             success: false,
-            message: 'Application already approved. Cannot resubmit.',
+            error: 'Application already approved. Cannot resubmit.',
           });
         }
 
         if (existingApp.status === 'REJECTED' && reapply_count >= 1) {
           return res.status(400).json({
             success: false,
-            message: 'Reapplication limit reached. You can only reapply once.',
+            error: 'Reapplication limit reached. You can only reapply once.',
           });
         }
 
         if (existingApp.status === 'PENDING') {
           return res.status(400).json({
             success: false,
-            message: 'Application already pending. Cannot submit again.',
+            error: 'Application already pending. Cannot submit again.',
           });
         }
       }
@@ -133,7 +134,7 @@ module.exports = async (req, res) => {
       if (collegeResult.rows.length === 0) {
         return res.status(400).json({
           success: false,
-          message: 'Invalid college',
+          error: 'Invalid college',
         });
       }
 
@@ -149,28 +150,30 @@ module.exports = async (req, res) => {
         [session_id, student_id, college_id, expires_at]
       );
 
-      const basePath = `${college_code}/${student.usn}/applications`;
+      // ✅ FIXED: Changed path from 'applications' to 'application' to match Netlify
+      const basePath = `${college_code}/${student.usn}/application`;
       const upload_urls = {
-        college_id_card: generateSASUrl(`${basePath}/college_id_card`),
         aadhaar: generateSASUrl(`${basePath}/aadhaar`),
-        sslc: generateSASUrl(`${basePath}/sslc`),
+        college_id_card: generateSASUrl(`${basePath}/college_id_card`),
+        marks_card_10th: generateSASUrl(`${basePath}/marks_card_10th`),
       };
 
       return res.status(200).json({
-        success: true,
         session_id,
         upload_urls,
         expires_at: expires_at.toISOString(),
+        message: 'Session created. Please upload documents within 25 minutes.',
       });
     }
 
-    if (action === 'finalize') {
+    // ✅ FIXED: Changed from 'finalize' to 'finalize_application' to match Netlify
+    if (action === 'finalize_application') {
       const { session_id } = req.body;
 
       if (!session_id || typeof session_id !== 'string' || !session_id.trim()) {
         return res.status(400).json({
           success: false,
-          message: 'Session ID is required',
+          error: 'session_id is required',
         });
       }
 
@@ -184,7 +187,7 @@ module.exports = async (req, res) => {
       if (sessionResult.rows.length === 0) {
         return res.status(400).json({
           success: false,
-          message: 'Invalid or expired session',
+          error: 'Invalid or expired session',
         });
       }
 
@@ -193,7 +196,7 @@ module.exports = async (req, res) => {
       if (session.student_id !== student_id) {
         return res.status(403).json({
           success: false,
-          message: 'Unauthorized',
+          error: 'Unauthorized',
         });
       }
 
@@ -206,7 +209,7 @@ module.exports = async (req, res) => {
         );
         return res.status(400).json({
           success: false,
-          message: 'Session has expired',
+          error: 'Session has expired',
         });
       }
 
@@ -222,16 +225,17 @@ module.exports = async (req, res) => {
       );
       const college_code = collegeResult.rows[0].college_code;
 
-      const basePath = `${college_code}/${student.usn}/applications`;
+      // ✅ FIXED: Changed path from 'applications' to 'application'
+      const basePath = `${college_code}/${student.usn}/application`;
       const collegeIdCardBlob = `${basePath}/college_id_card`;
       const aadhaarBlob = `${basePath}/aadhaar`;
-      const sslcBlob = `${basePath}/sslc`;
+      const marksCardBlob = `${basePath}/marks_card_10th`;
 
       const collegeIdCardExists = await blobExists(collegeIdCardBlob);
       if (!collegeIdCardExists) {
         return res.status(400).json({
           success: false,
-          message: 'College ID card not uploaded',
+          error: 'College ID card not uploaded',
         });
       }
 
@@ -239,15 +243,15 @@ module.exports = async (req, res) => {
       if (!aadhaarExists) {
         return res.status(400).json({
           success: false,
-          message: 'Aadhaar not uploaded',
+          error: 'Aadhaar not uploaded',
         });
       }
 
-      const sslcExists = await blobExists(sslcBlob);
-      if (!sslcExists) {
+      const marksCardExists = await blobExists(marksCardBlob);
+      if (!marksCardExists) {
         return res.status(400).json({
           success: false,
-          message: 'SSLC not uploaded',
+          error: '10th marks card not uploaded',
         });
       }
 
@@ -255,7 +259,7 @@ module.exports = async (req, res) => {
       if (collegeIdCardSize > MAX_FILE_SIZE) {
         return res.status(400).json({
           success: false,
-          message: 'College ID card exceeds 5MB limit',
+          error: 'College ID card exceeds 5MB limit',
         });
       }
 
@@ -263,22 +267,22 @@ module.exports = async (req, res) => {
       if (aadhaarSize > MAX_FILE_SIZE) {
         return res.status(400).json({
           success: false,
-          message: 'Aadhaar exceeds 5MB limit',
+          error: 'Aadhaar exceeds 5MB limit',
         });
       }
 
-      const sslcSize = await getBlobSize(sslcBlob);
-      if (sslcSize > MAX_FILE_SIZE) {
+      const marksCardSize = await getBlobSize(marksCardBlob);
+      if (marksCardSize > MAX_FILE_SIZE) {
         return res.status(400).json({
           success: false,
-          message: 'SSLC exceeds 5MB limit',
+          error: '10th marks card exceeds 5MB limit',
         });
       }
 
       const baseUrl = `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}`;
       const collegeIdCardUrl = `${baseUrl}/${basePath}/college_id_card`;
       const aadhaarUrl = `${baseUrl}/${basePath}/aadhaar`;
-      const sslcUrl = `${baseUrl}/${basePath}/sslc`;
+      const marksCardUrl = `${baseUrl}/${basePath}/marks_card_10th`;
 
       const existingAppResult = await client.query(
         `SELECT id, status
@@ -302,7 +306,7 @@ module.exports = async (req, res) => {
             await client.query('ROLLBACK');
             return res.status(400).json({
               success: false,
-              message: 'Application already approved. Cannot resubmit.',
+              error: 'Application already approved. Cannot resubmit.',
             });
           }
 
@@ -310,7 +314,7 @@ module.exports = async (req, res) => {
             await client.query('ROLLBACK');
             return res.status(400).json({
               success: false,
-              message: 'Application already pending. Cannot submit again.',
+              error: 'Application already pending. Cannot submit again.',
             });
           }
 
@@ -320,7 +324,7 @@ module.exports = async (req, res) => {
               await client.query('ROLLBACK');
               return res.status(400).json({
                 success: false,
-                message: 'Reapplication limit reached. You can only reapply once.',
+                error: 'Reapplication limit reached. You can only reapply once.',
               });
             }
 
@@ -373,7 +377,7 @@ module.exports = async (req, res) => {
            (application_id, document_type, document_url)
            VALUES
            ($1, 'sslc', $2)`,
-          [application_id, sslcUrl]
+          [application_id, marksCardUrl]
         );
 
         await client.query('COMMIT');
@@ -384,7 +388,6 @@ module.exports = async (req, res) => {
         );
 
         return res.status(200).json({
-          success: true,
           message: is_reapply 
             ? 'Application resubmitted successfully' 
             : 'Application submitted successfully',
@@ -398,13 +401,14 @@ module.exports = async (req, res) => {
 
     return res.status(400).json({
       success: false,
-      message: 'Invalid action',
+      error: 'Invalid action',
     });
   } catch (error) {
     console.error('Error in submit-application:', error);
     return res.status(500).json({
       success: false,
-      message: 'An error occurred processing your request',
+      error: 'Internal server error',
+      details: error.message,
     });
   } finally {
     client.release();
