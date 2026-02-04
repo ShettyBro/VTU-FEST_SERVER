@@ -1,4 +1,7 @@
 // routes/student/submit-application.js
+const auth = require('../../middleware/auth');
+const requireRole = require('../../middleware/requireRole');
+
 const nodeCrypto = require('crypto');
 // Polyfill for Azure SDK (required in Node runtimes without Web Crypto)
 if (!global.crypto) {
