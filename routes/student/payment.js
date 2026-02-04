@@ -1,28 +1,37 @@
+// routes/student/payment.js
+// ✅ PRODUCTION-READY: Payment route accessible by MANAGER and PRINCIPAL only
+// Despite being in /api/student/payment, this is actually a SHARED route for managers/principals
+
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { BlobServiceClient, generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require('@azure/storage-blob');
 const pool = require('../../db/pool');
+const { authenticate } = require('../../middleware/auth');
+const requireRole = require('../../middleware/requireRole');
+const { success, error, validationError } = require('../../utils/response');
 
-const JWT_SECRET = process.env.JWT_SECRET;
+// ============================================================================
+// AZURE BLOB STORAGE CONFIGURATION
+// ============================================================================
 const AZURE_STORAGE_ACCOUNT_NAME = process.env.AZURE_STORAGE_ACCOUNT_NAME;
 const AZURE_STORAGE_ACCOUNT_KEY = process.env.AZURE_STORAGE_ACCOUNT_KEY;
 const CONTAINER_NAME = 'student-documents';
+const SESSION_EXPIRY_MINUTES = 25;
 
 // ============================================================================
-// 25 EVENT TABLES (MATCHING AZURE ORIGINAL - ABBREVIATED NAMES)
+// 25 EVENT TABLES (MATCHING POSTGRESQL DATABASE - ABBREVIATED NAMES)
 // ============================================================================
 const EVENT_TABLES = [
   'event_classical_vocal_solo',
   'event_light_vocal_solo',
   'event_western_vocal_solo',
-  'event_classical_instr_percussion',           // ✅ ABBREVIATED (Azure naming)
-  'event_classical_instr_non_percussion',       // ✅ ABBREVIATED (Azure naming)
+  'event_classical_instr_percussion',           // ✅ ABBREVIATED (PostgreSQL naming)
+  'event_classical_instr_non_percussion',       // ✅ ABBREVIATED (PostgreSQL naming)
   'event_folk_orchestra',
   'event_group_song_indian',
   'event_group_song_western',
-  'event_folk_dance',                           // ✅ SHORT NAME (Azure naming)
+  'event_folk_dance',                           // ✅ SHORT NAME (PostgreSQL naming)
   'event_classical_dance_solo',
   'event_mime',
   'event_mimicry',
@@ -42,58 +51,6 @@ const EVENT_TABLES = [
 ];
 
 // ============================================================================
-// MIDDLEWARE: Verify JWT and Student Role
-// ============================================================================
-const verifyStudentAuth = (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        message: 'Token expired. Redirecting to login...',
-        redirect: 'https://vtufest2026.acharyahabba.com/',
-      });
-    }
-
-    const token = authHeader.substring(7);
-    let decoded;
-
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (err) {
-      return res.status(401).json({
-        success: false,
-        message: 'Token expired. Redirecting to login...',
-        redirect: 'https://vtufest2026.acharyahabba.com/',
-      });
-    }
-
-    if (decoded.role !== 'STUDENT') {
-      return res.status(403).json({
-        success: false,
-        error: 'Unauthorized: Student role required',
-      });
-    }
-
-    req.auth = {
-      user_id: decoded.user_id,
-      student_id: decoded.student_id,
-      college_id: decoded.college_id,
-      role: decoded.role,
-    };
-
-    next();
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: 'Authentication error',
-      details: error.message,
-    });
-  }
-};
-
-// ============================================================================
 // HELPER: Generate Azure Blob SAS URL
 // ============================================================================
 const generateSASUrl = (blobPath) => {
@@ -110,7 +67,7 @@ const generateSASUrl = (blobPath) => {
   const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
   const blobClient = containerClient.getBlobClient(blobPath);
 
-  const expiresOn = new Date(Date.now() + 25 * 60 * 1000);
+  const expiresOn = new Date(Date.now() + SESSION_EXPIRY_MINUTES * 60 * 1000);
 
   const sasToken = generateBlobSASQueryParameters(
     {
@@ -132,8 +89,9 @@ const getPaymentInfo = async (req, res) => {
   const client = await pool.connect();
   
   try {
-    const { college_id, student_id } = req.auth;
+    const { college_id } = req.user;
 
+    // Get college info and approval status
     const collegeResult = await client.query(
       `SELECT college_code, college_name, is_final_approved
        FROM colleges
@@ -142,22 +100,22 @@ const getPaymentInfo = async (req, res) => {
     );
 
     if (collegeResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'College not found',
-      });
+      return error(res, 'College not found', 404);
     }
 
     const college = collegeResult.rows[0];
 
+    // Check if final approval is done
     if (!college.is_final_approved) {
-      return res.status(200).json({
-        success: true,
+      return success(res, {
         can_upload: false,
         message: 'Final approval not done yet. Payment is locked.',
       });
     }
 
+    // ============================================================================
+    // COUNT PARTICIPATING EVENTS (DISTINCT EVENTS WITH COLLEGE PARTICIPATION)
+    // ============================================================================
     const eventCheckQueries = EVENT_TABLES.map(table => 
       `SELECT '${table}' AS event_table_name WHERE EXISTS (
         SELECT 1 FROM ${table} WHERE college_id = $1
@@ -170,8 +128,10 @@ const getPaymentInfo = async (req, res) => {
     const participating_event_keys = eventsResult.rows.map(row => row.event_table_name);
     const total_events = participating_event_keys.length;
 
+    // Calculate fee based on event count
     const amount_to_pay = total_events < 10 ? 8000 : 25000;
 
+    // Get existing payment status
     const paymentResult = await client.query(
       `SELECT 
         status,
@@ -198,21 +158,16 @@ const getPaymentInfo = async (req, res) => {
       };
     }
 
-    return res.status(200).json({
-      success: true,
+    return success(res, {
       can_upload: true,
       total_events,
       participating_event_keys,
       amount_to_pay,
       payment_status,
     });
-  } catch (error) {
-    console.error('get_payment_info error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      details: error.message,
-    });
+  } catch (err) {
+    console.error('get_payment_info error:', err);
+    return error(res, 'Internal server error', 500);
   } finally {
     client.release();
   }
@@ -225,16 +180,15 @@ const initPaymentUpload = async (req, res) => {
   const client = await pool.connect();
   
   try {
-    const { college_id } = req.auth;
+    const { college_id } = req.user;
     const { amount_paid, utr_reference_number } = req.body;
 
+    // Validate required fields
     if (!amount_paid || !utr_reference_number) {
-      return res.status(400).json({
-        success: false,
-        error: 'amount_paid and utr_reference_number are required',
-      });
+      return validationError(res, 'amount_paid and utr_reference_number are required');
     }
 
+    // Get college info and check approval status
     const collegeResult = await client.query(
       `SELECT college_code, college_name, is_final_approved
        FROM colleges
@@ -243,58 +197,49 @@ const initPaymentUpload = async (req, res) => {
     );
 
     if (collegeResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'College not found',
-      });
+      return error(res, 'College not found', 404);
     }
 
     const college = collegeResult.rows[0];
 
+    // Check if final approval is done
     if (!college.is_final_approved) {
-      return res.status(403).json({
-        success: false,
-        error: 'Final approval not done yet. Cannot upload payment.',
-      });
+      return error(res, 'Final approval not done yet. Cannot upload payment.', 403);
     }
 
+    // Check if payment already exists for this college
     const existingResult = await client.query(
       `SELECT id FROM payment_receipts WHERE college_id = $1`,
       [college_id]
     );
 
     if (existingResult.rows.length > 0) {
-      return res.status(403).json({
-        success: false,
-        error: 'Payment receipt already uploaded for this college',
-      });
+      return error(res, 'Payment receipt already uploaded for this college', 403);
     }
 
+    // Generate session
     const session_id = crypto.randomBytes(32).toString('hex');
-    const expires_at = new Date(Date.now() + 25 * 60 * 1000);
+    const expires_at = new Date(Date.now() + SESSION_EXPIRY_MINUTES * 60 * 1000);
 
+    // Store session in database
     await client.query(
       `INSERT INTO payment_sessions (session_id, college_id, amount_paid, utr_reference_number, expires_at)
        VALUES ($1, $2, $3, $4, $5)`,
       [session_id, college_id, parseInt(amount_paid), utr_reference_number, expires_at]
     );
 
+    // Generate Azure Blob SAS URL for upload
     const blobPath = `${college.college_code}/payment-proofs/payment_proof`;
     const upload_url = generateSASUrl(blobPath);
 
-    return res.status(200).json({
-      success: true,
+    return success(res, {
       session_id,
       upload_url,
       expires_at: expires_at.toISOString(),
     });
-  } catch (error) {
-    console.error('init_payment_upload error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      details: error.message,
-    });
+  } catch (err) {
+    console.error('init_payment_upload error:', err);
+    return error(res, 'Internal server error', 500);
   } finally {
     client.release();
   }
@@ -307,16 +252,14 @@ const finalizePayment = async (req, res) => {
   const client = await pool.connect();
   
   try {
-    const { college_id, student_id } = req.auth;
+    const { college_id, id: user_id, role, full_name } = req.user;
     const { session_id } = req.body;
 
     if (!session_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'session_id is required',
-      });
+      return validationError(res, 'session_id is required');
     }
 
+    // Validate session
     const sessionResult = await client.query(
       `SELECT amount_paid, utr_reference_number, expires_at
        FROM payment_sessions
@@ -325,34 +268,28 @@ const finalizePayment = async (req, res) => {
     );
 
     if (sessionResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Invalid or expired session',
-      });
+      return error(res, 'Invalid or expired session', 404);
     }
 
     const session = sessionResult.rows[0];
     const expires_at = new Date(session.expires_at);
 
+    // Check if session expired
     if (Date.now() > expires_at.getTime()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Session expired. Please restart.',
-      });
+      return error(res, 'Session expired. Please restart.', 400);
     }
 
+    // Check if payment already exists (race condition protection)
     const existingPayment = await client.query(
       `SELECT id FROM payment_receipts WHERE college_id = $1`,
       [college_id]
     );
 
     if (existingPayment.rows.length > 0) {
-      return res.status(403).json({
-        success: false,
-        error: 'Payment receipt already exists for this college',
-      });
+      return error(res, 'Payment receipt already exists for this college', 403);
     }
 
+    // Get college info
     const collegeResult = await client.query(
       `SELECT college_code, college_name FROM colleges WHERE id = $1`,
       [college_id]
@@ -360,23 +297,20 @@ const finalizePayment = async (req, res) => {
 
     const college = collegeResult.rows[0];
 
-    // ✅ FIXED: Query students table instead of users table
-    const studentResult = await client.query(
-      `SELECT full_name FROM students WHERE id = $1`,
-      [student_id]
-    );
+    // ✅ FIXED: Use full_name from req.user (set by authenticate middleware from users table)
+    const uploaded_by_name = full_name || 'Unknown';
 
-    const uploaded_by_name = studentResult.rows[0]?.full_name || 'Unknown';
-
+    // Construct receipt URL (blob already uploaded by frontend)
     const receipt_url = `https://${AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${college.college_code}/payment-proofs/payment_proof`;
 
+    // Insert payment receipt record
     await client.query(
       `INSERT INTO payment_receipts (
         college_id, college_code, college_name, receipt_url,
         amount_paid, utr_reference_number, uploaded_by_name,
         uploaded_by_type, status
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'STUDENT', 'waiting_for_verification')`,
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'waiting_for_verification')`,
       [
         college_id,
         college.college_code,
@@ -385,25 +319,22 @@ const finalizePayment = async (req, res) => {
         session.amount_paid,
         session.utr_reference_number,
         uploaded_by_name,
+        role, // uploaded_by_type = 'MANAGER' or 'PRINCIPAL'
       ]
     );
 
+    // Delete session after successful insert
     await client.query(
       `DELETE FROM payment_sessions WHERE session_id = $1`,
       [session_id]
     );
 
-    return res.status(200).json({
-      success: true,
+    return success(res, {
       message: 'Payment receipt uploaded successfully. Waiting for verification.',
     });
-  } catch (error) {
-    console.error('finalize_payment error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      details: error.message,
-    });
+  } catch (err) {
+    console.error('finalize_payment error:', err);
+    return error(res, 'Internal server error', 500);
   } finally {
     client.release();
   }
@@ -412,14 +343,11 @@ const finalizePayment = async (req, res) => {
 // ============================================================================
 // MAIN ROUTE: POST /api/student/payment
 // ============================================================================
-router.post('/payment', verifyStudentAuth, async (req, res) => {
+router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), async (req, res) => {
   const { action } = req.body;
 
   if (!action) {
-    return res.status(400).json({
-      success: false,
-      error: 'action is required',
-    });
+    return validationError(res, 'action is required');
   }
 
   try {
@@ -434,18 +362,11 @@ router.post('/payment', verifyStudentAuth, async (req, res) => {
         return await finalizePayment(req, res);
       
       default:
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid action',
-        });
+        return validationError(res, 'Invalid action');
     }
-  } catch (error) {
-    console.error('Payment route error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      details: error.message,
-    });
+  } catch (err) {
+    console.error('Payment route error:', err);
+    return error(res, 'Internal server error', 500);
   }
 });
 
