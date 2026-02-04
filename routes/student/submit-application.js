@@ -1,5 +1,7 @@
 // routes/student/submit-application.js
-const auth = require('../../middleware/auth');
+const express = require('express');
+const router = express.Router();
+const { authenticate } = require('../../middleware/auth');
 const requireRole = require('../../middleware/requireRole');
 
 const nodeCrypto = require('crypto');
@@ -56,7 +58,7 @@ const getBlobSize = async (blobName) => {
   return properties.contentLength;
 };
 
-module.exports = async (req, res) => {
+router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -416,4 +418,6 @@ module.exports = async (req, res) => {
   } finally {
     client.release();
   }
-};
+});
+
+module.exports = router;
