@@ -85,7 +85,8 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ error: 'Valid gender is required' });
       }
 
-      if (!college_id || typeof college_id !== 'number') {
+      const collegeIdNum = typeof college_id === 'number' ? college_id : parseInt(college_id, 10);
+      if (!collegeIdNum || isNaN(collegeIdNum)) {
         return res.status(400).json({ error: 'College ID is required' });
       }
 
@@ -124,7 +125,7 @@ router.post('/', async (req, res) => {
         `SELECT college_code, is_active
          FROM colleges
          WHERE id = $1`,
-        [college_id]
+        [collegeIdNum]
       );
 
       if (collegeResult.rows.length === 0) {
@@ -144,7 +145,7 @@ router.post('/', async (req, res) => {
          (session_id, usn, full_name, email, phone, gender, college_id, expires_at)
          VALUES 
          ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [session_id, normalizedUSN, full_name.trim(), normalizedEmail, normalizedPhone, gender, college_id, expires_at]
+        [session_id, normalizedUSN, full_name.trim(), normalizedEmail, normalizedPhone, gender, collegeIdNum, expires_at]
       );
 
       const basePath = `${college_code}/${normalizedUSN}/registration`;
@@ -194,9 +195,11 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ error: 'Session has expired' });
       }
 
+      const collegeIdNum = typeof session.college_id === 'number' ? session.college_id : parseInt(session.college_id, 10);
+
       const collegeResult = await client.query(
         'SELECT college_code FROM colleges WHERE id = $1',
-        [session.college_id]
+        [collegeIdNum]
       );
 
       if (collegeResult.rows.length === 0) {
@@ -226,7 +229,7 @@ router.post('/', async (req, res) => {
          (college_id, full_name, usn, email, phone, gender, passport_photo_url, password_hash, is_active)
          VALUES 
          ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [session.college_id, session.full_name, session.usn, session.email, session.phone, session.gender, passport_photo_url, passwordHash, true]
+        [collegeIdNum, session.full_name, session.usn, session.email, session.phone, session.gender, passport_photo_url, passwordHash, true]
       );
 
       await client.query(
