@@ -1,53 +1,6 @@
 // routes/manager/review-applications.js
 const pool = require('../../db/pool');
 
-router.post('/', async (req, res) => {
-  console.log('📍 START: review-applications endpoint hit');
-  console.log('📍 User:', req.user?.id, 'College:', req.user?.college_id);
-  
-  const { action } = req.body;
-  console.log('📍 Action requested:', action);
-
-  let client;
-  try {
-    console.log('📍 Attempting to get database client...');
-    client = await pool.connect();
-    console.log('📍 ✅ Database client acquired');
-
-    if (action === 'list') {
-      console.log('📍 Running main query...');
-      const result = await client.query(/* ... */);
-      console.log('📍 ✅ Query completed, rows:', result.rows.length);
-      
-      console.log('📍 Processing results...');
-      // ... processing logic ...
-      console.log('📍 ✅ Processing complete, applications:', applications.length);
-      
-      return res.status(200).json({
-        success: true,
-        applications,
-      });
-    }
-  } catch (error) {
-    console.error('📍 ❌ ERROR:', error.message);
-    return res.status(500).json({
-      success: false,
-      message: 'An error occurred processing your request',
-    });
-  } finally {
-    if (client) {
-      console.log('📍 Releasing database client...');
-      client.release();
-      console.log('📍 ✅ Database client released');
-    }
-  }
-});
-
-
-
-
-
-
 module.exports = async (req, res) => {
   const user_id = req.user.id;
   const college_id = req.user.college_id;
