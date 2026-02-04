@@ -264,7 +264,7 @@ router.post('/', async (req, res) => {
         clearTimeout(requestTimeout);
 
         return res.status(200).json({
-          success: false,
+          success: true,
           message: 'Application approved successfully',
           requestId,
         });

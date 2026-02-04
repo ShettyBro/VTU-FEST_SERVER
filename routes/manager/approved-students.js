@@ -1,80 +1,214 @@
 // routes/manager/approved-students.js
+// ✅ PRODUCTION-READY: Optimized with single JOIN query to prevent N+1 issue
+
+const express = require('express');
+const router = express.Router();
 const pool = require('../../db/pool');
+const { authenticate } = require('../../middleware/auth');
+const requireRole = require('../../middleware/requireRole');
+const { success, error } = require('../../utils/response');
 
-module.exports = async (req, res) => {
-  const user_id = req.user.id;
-  const college_id = req.user.college_id;
-  const role = req.user.role;
+// Apply middleware
+router.use(authenticate);
+router.use(requireRole(['MANAGER', 'PRINCIPAL']));
 
-  if (!user_id || !college_id || role !== 'MANAGER') {
-    return res.status(403).json({
-      success: false,
-      message: 'Unauthorized',
-    });
-  }
-
-  const client = await pool.connect();
+// ============================================================================
+// POST /api/manager/approved-students
+// Get all approved students with their documents
+// ============================================================================
+router.post('/', async (req, res) => {
+  // 🔍 DEBUGGING: Track request timing
+  const requestId = `REQ-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const startTime = Date.now();
+  
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log(`📍 [${requestId}] APPROVED-STUDENTS: Request started`);
+  console.log(`📍 [${requestId}] Timestamp: ${new Date().toISOString()}`);
+  console.log(`📍 [${requestId}] User ID: ${req.user?.id}`);
+  console.log(`📍 [${requestId}] College ID: ${req.user?.college_id}`);
+  console.log(`📍 [${requestId}] Role: ${req.user?.role}`);
+  
+  // ⏱️ TIMEOUT PROTECTION: Respond before Railway's 10s timeout
+  let timeoutOccurred = false;
+  const requestTimeout = setTimeout(() => {
+    timeoutOccurred = true;
+    const elapsed = Date.now() - startTime;
+    console.error(`📍 [${requestId}] ⏱️ TIMEOUT after ${elapsed}ms`);
+    
+    if (!res.headersSent) {
+      res.status(504).json({
+        success: false,
+        message: 'Request timeout. Please contact support if this persists.',
+        requestId,
+        elapsed_ms: elapsed,
+      });
+    }
+  }, 9000); // 9 seconds (before Railway's 10s limit)
 
   try {
-    const studentsResult = await client.query(
-      `SELECT 
-         sa.id AS application_id,
-         sa.student_id,
-         sa.status,
-         sa.submitted_at,
-         sa.reviewed_at,
-         s.usn,
-         s.full_name,
-         s.email,
-         s.phone,
-         s.gender,
-         s.passport_photo_url
-       FROM student_applications sa
-       INNER JOIN students s ON sa.student_id = s.id
-       WHERE s.college_id = $1
-         AND sa.status = 'APPROVED'
-       ORDER BY s.full_name ASC`,
-      [college_id]
-    );
+    const user_id = req.user.id;
+    const college_id = req.user.college_id;
+    const role = req.user.role;
 
-    const students = [];
-
-    for (const student of studentsResult.rows) {
-      const documentsResult = await client.query(
-        `SELECT document_type, document_url
-         FROM application_documents
-         WHERE application_id = $1`,
-        [student.application_id]
-      );
-
-      students.push({
-        application_id: student.application_id,
-        student_id: student.student_id,
-        usn: student.usn,
-        full_name: student.full_name,
-        email: student.email,
-        phone: student.phone,
-        gender: student.gender,
-        passport_photo_url: student.passport_photo_url,
-        status: student.status,
-        submitted_at: student.submitted_at,
-        reviewed_at: student.reviewed_at,
-        documents: documentsResult.rows,
+    if (!user_id || !college_id || !['MANAGER', 'PRINCIPAL'].includes(role)) {
+      clearTimeout(requestTimeout);
+      console.warn(`📍 [${requestId}] ❌ Authorization failed`);
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized',
+        requestId,
       });
     }
 
-    return res.status(200).json({
-      success: true,
-      students,
-    });
-  } catch (error) {
-    console.error('Error in approved-students:', error);
+    let client;
+    const dbConnectStart = Date.now();
+    
+    try {
+      console.log(`📍 [${requestId}] 🔌 Acquiring database connection...`);
+      client = await pool.connect();
+      const dbConnectTime = Date.now() - dbConnectStart;
+      console.log(`📍 [${requestId}] ✅ Database connected in ${dbConnectTime}ms`);
 
-    return res.status(500).json({
-      success: false,
-      message: 'An error occurred processing your request',
-    });
-  } finally {
-    client.release();
+      console.log(`📍 [${requestId}] 🔍 Fetching approved students for college ${college_id}...`);
+      
+      const queryStart = Date.now();
+      
+      // ✅ OPTIMIZED QUERY: Single JOIN instead of N+1 queries
+      const result = await client.query(
+        `SELECT 
+           sa.id AS application_id,
+           sa.student_id,
+           sa.status,
+           sa.submitted_at,
+           sa.reviewed_at,
+           s.usn,
+           s.full_name,
+           s.email,
+           s.phone,
+           s.gender,
+           s.passport_photo_url,
+           ad.document_type,
+           ad.document_url
+         FROM student_applications sa
+         INNER JOIN students s ON sa.student_id = s.id
+         LEFT JOIN application_documents ad ON sa.id = ad.application_id
+         WHERE s.college_id = $1
+           AND sa.status = 'APPROVED'
+         ORDER BY s.full_name ASC, sa.id, ad.id
+         LIMIT 10000`,
+        [college_id]
+      );
+
+      const queryTime = Date.now() - queryStart;
+      console.log(`📍 [${requestId}] ✅ Query completed in ${queryTime}ms`);
+      console.log(`📍 [${requestId}] 📊 Rows returned: ${result.rows.length}`);
+
+      // ========================================================================
+      // PROCESS RESULTS: Group documents by student
+      // ========================================================================
+      const processingStart = Date.now();
+      const studentsMap = new Map();
+
+      for (const row of result.rows) {
+        const studentId = row.student_id;
+
+        if (!studentsMap.has(studentId)) {
+          studentsMap.set(studentId, {
+            application_id: row.application_id,
+            student_id: row.student_id,
+            usn: row.usn,
+            full_name: row.full_name,
+            email: row.email,
+            phone: row.phone,
+            gender: row.gender,
+            passport_photo_url: row.passport_photo_url,
+            status: row.status,
+            submitted_at: row.submitted_at,
+            reviewed_at: row.reviewed_at,
+            documents: [],
+          });
+        }
+
+        if (row.document_type && row.document_url) {
+          studentsMap.get(studentId).documents.push({
+            document_type: row.document_type,
+            document_url: row.document_url,
+          });
+        }
+      }
+
+      const students = Array.from(studentsMap.values());
+      const processingTime = Date.now() - processingStart;
+      const totalTime = Date.now() - startTime;
+
+      console.log(`📍 [${requestId}] ✅ Processing completed in ${processingTime}ms`);
+      console.log(`📍 [${requestId}] 📦 Students processed: ${students.length}`);
+      console.log(`📍 [${requestId}] ⏱️ Total request time: ${totalTime}ms`);
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+      clearTimeout(requestTimeout);
+
+      return res.status(200).json({
+        success: true,
+        students,
+        _debug: {
+          requestId,
+          timings: {
+            db_connect_ms: dbConnectTime,
+            query_ms: queryTime,
+            processing_ms: processingTime,
+            total_ms: totalTime,
+          },
+          counts: {
+            students: students.length,
+            total_rows: result.rows.length,
+          },
+        },
+      });
+
+    } catch (dbError) {
+      clearTimeout(requestTimeout);
+      const elapsed = Date.now() - startTime;
+      
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(`📍 [${requestId}] ❌ DATABASE ERROR after ${elapsed}ms`);
+      console.error(`📍 [${requestId}] Error:`, dbError);
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+      if (!res.headersSent) {
+        return res.status(500).json({
+          success: false,
+          message: 'Database error occurred. Please try again.',
+          requestId,
+          error: process.env.NODE_ENV === 'development' ? dbError.message : undefined,
+        });
+      }
+
+    } finally {
+      if (client) {
+        client.release();
+        console.log(`📍 [${requestId}] 🔌 Database connection released`);
+      }
+    }
+
+  } catch (error) {
+    clearTimeout(requestTimeout);
+    const elapsed = Date.now() - startTime;
+    
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error(`📍 [${requestId}] ❌ FATAL ERROR after ${elapsed}ms`);
+    console.error(`📍 [${requestId}] Error:`, error);
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: 'An error occurred processing your request',
+        requestId,
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
   }
-};
+});
+
+module.exports = router;
