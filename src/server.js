@@ -112,6 +112,12 @@ process.on('uncaughtException', (error) => {
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
+  // Check if it's just a transient Neon connection drop
+  if (reason?.message?.includes('Connection terminated unexpectedly')) {
+    console.warn('⚠️ Minor DB connection drop detected. Pool will recover. Not shutting down.');
+    return;
+  }
+
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
   gracefulShutdown('unhandledRejection');
 });

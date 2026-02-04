@@ -1,26 +1,27 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Neon PostgreSQL connection pool configuration
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { 
     rejectUnauthorized: false 
-  }, // Required for Neon
+  },
   max: 20,
   min: 2,
   idleTimeoutMillis: 30000,
+  // Add these two lines:
+  keepAlive: true, 
+  connectionTimeoutMillis: 5000, 
 });
 
-// Handle unexpected database errors
+// Handle unexpected database errors without crashing
 pool.on('error', (err) => {
-  console.error('Unexpected database error:', err);
-  process.exit(-1);
+  // Log the error so you can see it, but DON'T exit the process
+  console.error('⚠️ Unexpected database error on idle client:', err.message);
 });
 
-// Log successful connection (optional, for debugging)
 pool.on('connect', () => {
-  console.log('Connected to Neon PostgreSQL database');
+  console.log('✓ New client connected to Neon pool');
 });
 
 module.exports = pool;
