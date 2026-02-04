@@ -88,13 +88,7 @@ app.use('/api/auth/reset-password', resetPasswordRoute);
 // Student routes
 app.use('/api/student/register', registerRoute);
 app.use('/api/student/dashboard', studentDashboardRoute);
-app.use(
-  '/api/student/submit-application',
-  auth,
-  requireRole('STUDENT'),
-  submitApplicationRoute
-);
-
+app.use('/api/student/submit-application', submitApplicationRoute);
 app.use('/api/student/payment', studentPaymentRoute);
 
 // Manager routes
