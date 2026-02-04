@@ -1,92 +1,60 @@
 // routes/manager/review-applications.js
-// ============================================================================
-// 🚀 PRODUCTION-READY VERSION WITH COMPREHENSIVE DEBUGGING
-// ============================================================================
-// Author: AI Assistant
-// Date: 2026-02-04
-// Purpose: Handle review, approve, and reject student applications
-// Optimizations: 
-//   - Single JOIN query (no N+1 problem)
-//   - Timeout protection (9s before Railway's 10s limit)
-//   - Comprehensive error logging
-//   - Performance monitoring
-// ============================================================================
+// ✅ PRODUCTION-READY: Router pattern with full debugging & optimization
 
+const express = require('express');
+const router = express.Router();
 const pool = require('../../db/pool');
+const { authenticate } = require('../../middleware/auth');
+const requireRole = require('../../middleware/requireRole');
 
-module.exports = async (req, res) => {
-  // ============================================================================
-  // 📊 STEP 1: INITIALIZE REQUEST TRACKING
-  // ============================================================================
+// Apply middleware
+router.use(authenticate);
+router.use(requireRole(['MANAGER']));
+
+// ============================================================================
+// POST /api/manager/review-applications
+// Multi-action endpoint for application review management
+// ============================================================================
+router.post('/', async (req, res) => {
+  // 🔍 DEBUGGING: Track request timing
   const requestId = `REQ-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const startTime = Date.now();
-  const timings = {};
   
-  console.log('\n' + '='.repeat(80));
-  console.log(`🚀 [${requestId}] REVIEW-APPLICATIONS REQUEST STARTED`);
-  console.log('='.repeat(80));
-  console.log(`📅 Timestamp: ${new Date().toISOString()}`);
-  console.log(`👤 User ID: ${req.user?.id || 'UNKNOWN'}`);
-  console.log(`🏛️  College ID: ${req.user?.college_id || 'UNKNOWN'}`);
-  console.log(`🎭 Role: ${req.user?.role || 'UNKNOWN'}`);
-  console.log(`📨 Action: ${req.body?.action || 'UNKNOWN'}`);
-  console.log('='.repeat(80) + '\n');
-
-  // ============================================================================
-  // ⏱️ STEP 2: TIMEOUT PROTECTION MECHANISM
-  // ============================================================================
-  // Railway proxy times out after 10 seconds with 502 error
-  // We set our timeout to 9 seconds to respond before Railway kills the connection
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log(`📍 [${requestId}] REVIEW-APPLICATIONS: Request started`);
+  console.log(`📍 [${requestId}] Timestamp: ${new Date().toISOString()}`);
+  console.log(`📍 [${requestId}] User ID: ${req.user?.id}`);
+  console.log(`📍 [${requestId}] College ID: ${req.user?.college_id}`);
+  console.log(`📍 [${requestId}] Role: ${req.user?.role}`);
+  
+  // ⏱️ TIMEOUT PROTECTION: Respond before Railway's 10s timeout
   let timeoutOccurred = false;
   const requestTimeout = setTimeout(() => {
     timeoutOccurred = true;
     const elapsed = Date.now() - startTime;
-    
-    console.error('\n' + '⚠'.repeat(80));
-    console.error(`⏱️  [${requestId}] TIMEOUT TRIGGERED AT ${elapsed}ms`);
-    console.error('⚠'.repeat(80));
-    console.error(`🔍 Debug Info:`);
-    console.error(`   - Request started at: ${new Date(startTime).toISOString()}`);
-    console.error(`   - Current time: ${new Date().toISOString()}`);
-    console.error(`   - Elapsed: ${elapsed}ms`);
-    console.error(`   - Timings so far:`, JSON.stringify(timings, null, 2));
-    console.error('⚠'.repeat(80) + '\n');
+    console.error(`📍 [${requestId}] ⏱️ TIMEOUT after ${elapsed}ms`);
     
     if (!res.headersSent) {
       res.status(504).json({
         success: false,
-        message: 'Request timeout. The operation took longer than expected. Please try again or contact support.',
+        message: 'Request timeout. The operation took too long. Please contact support if this persists.',
         requestId,
-        debug: {
-          elapsed_ms: elapsed,
-          timeout_threshold_ms: 9000,
-          timings,
-        },
+        elapsed_ms: elapsed,
       });
     }
-  }, 9000); // 9 seconds timeout
+  }, 9000); // 9 seconds (before Railway's 10s limit)
 
   try {
-    // ============================================================================
-    // 🔐 STEP 3: AUTHORIZATION VALIDATION
-    // ============================================================================
-    const authStart = Date.now();
-    console.log(`🔐 [${requestId}] Step 3: Validating authorization...`);
-    
-    const user_id = req.user?.id;
-    const college_id = req.user?.college_id;
-    const role = req.user?.role;
+    const user_id = req.user.id;
+    const college_id = req.user.college_id;
+    const role = req.user.role;
+    const { action } = req.body;
+
+    console.log(`📍 [${requestId}] Action requested: "${action}"`);
 
     if (!user_id || !college_id || role !== 'MANAGER') {
       clearTimeout(requestTimeout);
-      timings.authorization_ms = Date.now() - authStart;
-      
-      console.error(`❌ [${requestId}] Authorization failed:`);
-      console.error(`   - User ID: ${user_id || 'MISSING'}`);
-      console.error(`   - College ID: ${college_id || 'MISSING'}`);
-      console.error(`   - Role: ${role || 'MISSING'}`);
-      console.error(`   - Expected Role: MANAGER\n`);
-      
+      console.warn(`📍 [${requestId}] ❌ Authorization failed`);
       return res.status(403).json({
         success: false,
         message: 'Unauthorized',
@@ -94,66 +62,24 @@ module.exports = async (req, res) => {
       });
     }
 
-    timings.authorization_ms = Date.now() - authStart;
-    console.log(`✅ [${requestId}] Authorization passed in ${timings.authorization_ms}ms\n`);
-
-    const { action } = req.body;
-
-    // ============================================================================
-    // 🔌 STEP 4: DATABASE CONNECTION ACQUISITION
-    // ============================================================================
-    const dbConnectStart = Date.now();
-    console.log(`🔌 [${requestId}] Step 4: Acquiring database connection...`);
-    
     let client;
+    const dbConnectStart = Date.now();
+    
     try {
+      console.log(`📍 [${requestId}] 🔌 Acquiring database connection...`);
       client = await pool.connect();
-      timings.db_connect_ms = Date.now() - dbConnectStart;
-      console.log(`✅ [${requestId}] Database connected in ${timings.db_connect_ms}ms`);
-      
-      // Log pool statistics
-      console.log(`📊 [${requestId}] Pool stats: Total=${pool.totalCount}, Idle=${pool.idleCount}, Waiting=${pool.waitingCount}\n`);
+      const dbConnectTime = Date.now() - dbConnectStart;
+      console.log(`📍 [${requestId}] ✅ Database connected in ${dbConnectTime}ms`);
 
-    } catch (dbConnectError) {
-      clearTimeout(requestTimeout);
-      timings.db_connect_ms = Date.now() - dbConnectStart;
-      
-      console.error('\n' + '❌'.repeat(80));
-      console.error(`🔌 [${requestId}] DATABASE CONNECTION FAILED`);
-      console.error('❌'.repeat(80));
-      console.error(`   Error: ${dbConnectError.message}`);
-      console.error(`   Code: ${dbConnectError.code}`);
-      console.error(`   Time taken: ${timings.db_connect_ms}ms`);
-      console.error(`   Pool total: ${pool.totalCount}`);
-      console.error(`   Pool idle: ${pool.idleCount}`);
-      console.error(`   Pool waiting: ${pool.waitingCount}`);
-      console.error('❌'.repeat(80) + '\n');
-
-      return res.status(503).json({
-        success: false,
-        message: 'Database connection failed. Please try again.',
-        requestId,
-        debug: {
-          error: dbConnectError.message,
-          timings,
-        },
-      });
-    }
-
-    try {
-      // ============================================================================
-      // 📋 ACTION: LIST APPLICATIONS
-      // ============================================================================
+      // ========================================================================
+      // ACTION: LIST APPLICATIONS
+      // ========================================================================
       if (action === 'list') {
-        console.log(`📋 [${requestId}] Step 5: Processing 'list' action...`);
-        console.log(`   - College ID: ${college_id}`);
+        console.log(`📍 [${requestId}] 🔍 Fetching applications for college ${college_id}...`);
         
         const queryStart = Date.now();
-        console.log(`🔍 [${requestId}] Executing optimized JOIN query...`);
         
-        // ✅ OPTIMIZED: Single query with JOIN instead of N+1 queries
-        // ✅ SAFETY: LIMIT clause to prevent massive result sets
-        // ✅ PERFORMANCE: Uses existing indexes on college_id and student_id
+        // ✅ OPTIMIZED QUERY: Single JOIN instead of N+1 queries
         const result = await client.query(
           `SELECT 
              sa.id AS application_id,
@@ -179,29 +105,19 @@ module.exports = async (req, res) => {
           [college_id]
         );
 
-        timings.query_ms = Date.now() - queryStart;
-        console.log(`✅ [${requestId}] Query completed in ${timings.query_ms}ms`);
-        console.log(`📊 [${requestId}] Rows returned: ${result.rows.length}`);
+        const queryTime = Date.now() - queryStart;
+        console.log(`📍 [${requestId}] ✅ Query completed in ${queryTime}ms`);
+        console.log(`📍 [${requestId}] 📊 Rows returned: ${result.rows.length}`);
 
-        // Performance warning if query is slow
-        if (timings.query_ms > 1000) {
-          console.warn(`⚠️  [${requestId}] SLOW QUERY WARNING: ${timings.query_ms}ms (threshold: 1000ms)`);
-          console.warn(`   Consider adding more specific indexes or reducing data size`);
-        }
-
-        // ============================================================================
-        // 🔄 STEP 6: PROCESS AND GROUP RESULTS
-        // ============================================================================
+        // ========================================================================
+        // PROCESS RESULTS: Group documents by application
+        // ========================================================================
         const processingStart = Date.now();
-        console.log(`🔄 [${requestId}] Step 6: Processing and grouping results...`);
-        
         const applicationsMap = new Map();
-        let documentCount = 0;
 
         for (const row of result.rows) {
           const appId = row.application_id;
 
-          // Initialize application if not exists
           if (!applicationsMap.has(appId)) {
             applicationsMap.set(appId, {
               application_id: appId,
@@ -220,33 +136,22 @@ module.exports = async (req, res) => {
             });
           }
 
-          // Add document if exists (LEFT JOIN may have nulls)
           if (row.document_type && row.document_url) {
             applicationsMap.get(appId).documents.push({
               document_type: row.document_type,
               document_url: row.document_url,
             });
-            documentCount++;
           }
         }
 
         const applications = Array.from(applicationsMap.values());
-        timings.processing_ms = Date.now() - processingStart;
-        timings.total_ms = Date.now() - startTime;
+        const processingTime = Date.now() - processingStart;
+        const totalTime = Date.now() - startTime;
 
-        console.log(`✅ [${requestId}] Processing completed in ${timings.processing_ms}ms`);
-        console.log(`📦 [${requestId}] Results:`);
-        console.log(`   - Applications: ${applications.length}`);
-        console.log(`   - Total documents: ${documentCount}`);
-        console.log(`   - Average docs per app: ${(documentCount / applications.length || 0).toFixed(2)}`);
-        
-        console.log(`\n⏱️  [${requestId}] PERFORMANCE SUMMARY:`);
-        console.log(`   - Authorization: ${timings.authorization_ms}ms`);
-        console.log(`   - DB Connect: ${timings.db_connect_ms}ms`);
-        console.log(`   - Query: ${timings.query_ms}ms`);
-        console.log(`   - Processing: ${timings.processing_ms}ms`);
-        console.log(`   - TOTAL: ${timings.total_ms}ms`);
-        console.log('='.repeat(80) + '\n');
+        console.log(`📍 [${requestId}] ✅ Processing completed in ${processingTime}ms`);
+        console.log(`📍 [${requestId}] 📦 Applications processed: ${applications.length}`);
+        console.log(`📍 [${requestId}] ⏱️ Total request time: ${totalTime}ms`);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
         clearTimeout(requestTimeout);
 
@@ -255,28 +160,30 @@ module.exports = async (req, res) => {
           applications,
           _debug: {
             requestId,
-            timings,
+            timings: {
+              db_connect_ms: dbConnectTime,
+              query_ms: queryTime,
+              processing_ms: processingTime,
+              total_ms: totalTime,
+            },
             counts: {
               applications: applications.length,
-              documents: documentCount,
-              rows_returned: result.rows.length,
+              total_rows: result.rows.length,
             },
           },
         });
       }
 
-      // ============================================================================
-      // ✅ ACTION: APPROVE APPLICATION
-      // ============================================================================
+      // ========================================================================
+      // ACTION: APPROVE APPLICATION
+      // ========================================================================
       if (action === 'approve') {
-        console.log(`✅ [${requestId}] Step 5: Processing 'approve' action...`);
+        console.log(`📍 [${requestId}] ✅ Approve action requested`);
         
         const { application_id } = req.body;
 
         if (!application_id) {
           clearTimeout(requestTimeout);
-          console.error(`❌ [${requestId}] Missing application_id in request body\n`);
-          
           return res.status(400).json({
             success: false,
             message: 'application_id is required',
@@ -284,20 +191,13 @@ module.exports = async (req, res) => {
           });
         }
 
-        console.log(`   - Application ID: ${application_id}`);
-
-        // Check college lock status
-        const lockCheckStart = Date.now();
         const lockResult = await client.query(
           `SELECT is_final_approved FROM colleges WHERE id = $1`,
           [college_id]
         );
-        timings.lock_check_ms = Date.now() - lockCheckStart;
 
         if (lockResult.rows.length === 0) {
           clearTimeout(requestTimeout);
-          console.error(`❌ [${requestId}] College not found: ${college_id}\n`);
-          
           return res.status(400).json({
             success: false,
             message: 'Invalid college',
@@ -307,8 +207,6 @@ module.exports = async (req, res) => {
 
         if (lockResult.rows[0].is_final_approved === true) {
           clearTimeout(requestTimeout);
-          console.warn(`⚠️  [${requestId}] College is locked (final approved)\n`);
-          
           return res.status(403).json({
             success: false,
             message: 'Final approval is locked. Cannot approve applications.',
@@ -316,10 +214,6 @@ module.exports = async (req, res) => {
           });
         }
 
-        console.log(`✅ [${requestId}] College lock check passed in ${timings.lock_check_ms}ms`);
-
-        // Verify application ownership and status
-        const appCheckStart = Date.now();
         const appResult = await client.query(
           `SELECT sa.id, sa.status, s.college_id
            FROM student_applications sa
@@ -327,12 +221,9 @@ module.exports = async (req, res) => {
            WHERE sa.id = $1`,
           [application_id]
         );
-        timings.app_check_ms = Date.now() - appCheckStart;
 
         if (appResult.rows.length === 0) {
           clearTimeout(requestTimeout);
-          console.error(`❌ [${requestId}] Application not found: ${application_id}\n`);
-          
           return res.status(404).json({
             success: false,
             message: 'Application not found',
@@ -344,8 +235,6 @@ module.exports = async (req, res) => {
 
         if (application.college_id !== college_id) {
           clearTimeout(requestTimeout);
-          console.error(`❌ [${requestId}] College mismatch: app=${application.college_id}, user=${college_id}\n`);
-          
           return res.status(403).json({
             success: false,
             message: 'Unauthorized',
@@ -355,8 +244,6 @@ module.exports = async (req, res) => {
 
         if (application.status !== 'PENDING') {
           clearTimeout(requestTimeout);
-          console.warn(`⚠️  [${requestId}] Application status is '${application.status}', not 'PENDING'\n`);
-          
           return res.status(400).json({
             success: false,
             message: 'Only PENDING applications can be approved',
@@ -364,45 +251,35 @@ module.exports = async (req, res) => {
           });
         }
 
-        console.log(`✅ [${requestId}] Application verification passed in ${timings.app_check_ms}ms`);
-
-        // Update application status
-        const updateStart = Date.now();
         await client.query(
           `UPDATE student_applications
            SET status = 'APPROVED', reviewed_at = NOW()
            WHERE id = $1`,
           [application_id]
         );
-        timings.update_ms = Date.now() - updateStart;
-        timings.total_ms = Date.now() - startTime;
 
-        console.log(`✅ [${requestId}] Application approved in ${timings.update_ms}ms`);
-        console.log(`⏱️  [${requestId}] Total time: ${timings.total_ms}ms`);
-        console.log('='.repeat(80) + '\n');
+        const totalTime = Date.now() - startTime;
+        console.log(`📍 [${requestId}] ✅ Application approved in ${totalTime}ms`);
 
         clearTimeout(requestTimeout);
 
         return res.status(200).json({
-          success: true,
+          success: false,
           message: 'Application approved successfully',
           requestId,
-          _debug: { timings },
         });
       }
 
-      // ============================================================================
-      // ❌ ACTION: REJECT APPLICATION
-      // ============================================================================
+      // ========================================================================
+      // ACTION: REJECT APPLICATION
+      // ========================================================================
       if (action === 'reject') {
-        console.log(`❌ [${requestId}] Step 5: Processing 'reject' action...`);
+        console.log(`📍 [${requestId}] ❌ Reject action requested`);
         
         const { application_id, rejected_reason } = req.body;
 
         if (!application_id) {
           clearTimeout(requestTimeout);
-          console.error(`❌ [${requestId}] Missing application_id in request body\n`);
-          
           return res.status(400).json({
             success: false,
             message: 'application_id is required',
@@ -410,21 +287,13 @@ module.exports = async (req, res) => {
           });
         }
 
-        console.log(`   - Application ID: ${application_id}`);
-        console.log(`   - Reason: ${rejected_reason || 'No reason provided'}`);
-
-        // Check college lock status
-        const lockCheckStart = Date.now();
         const lockResult = await client.query(
           `SELECT is_final_approved FROM colleges WHERE id = $1`,
           [college_id]
         );
-        timings.lock_check_ms = Date.now() - lockCheckStart;
 
         if (lockResult.rows.length === 0) {
           clearTimeout(requestTimeout);
-          console.error(`❌ [${requestId}] College not found: ${college_id}\n`);
-          
           return res.status(400).json({
             success: false,
             message: 'Invalid college',
@@ -434,8 +303,6 @@ module.exports = async (req, res) => {
 
         if (lockResult.rows[0].is_final_approved === true) {
           clearTimeout(requestTimeout);
-          console.warn(`⚠️  [${requestId}] College is locked (final approved)\n`);
-          
           return res.status(403).json({
             success: false,
             message: 'Final approval is locked. Cannot reject applications.',
@@ -443,10 +310,6 @@ module.exports = async (req, res) => {
           });
         }
 
-        console.log(`✅ [${requestId}] College lock check passed in ${timings.lock_check_ms}ms`);
-
-        // Verify application ownership and status
-        const appCheckStart = Date.now();
         const appResult = await client.query(
           `SELECT sa.id, sa.status, s.college_id
            FROM student_applications sa
@@ -454,12 +317,9 @@ module.exports = async (req, res) => {
            WHERE sa.id = $1`,
           [application_id]
         );
-        timings.app_check_ms = Date.now() - appCheckStart;
 
         if (appResult.rows.length === 0) {
           clearTimeout(requestTimeout);
-          console.error(`❌ [${requestId}] Application not found: ${application_id}\n`);
-          
           return res.status(404).json({
             success: false,
             message: 'Application not found',
@@ -471,8 +331,6 @@ module.exports = async (req, res) => {
 
         if (application.college_id !== college_id) {
           clearTimeout(requestTimeout);
-          console.error(`❌ [${requestId}] College mismatch: app=${application.college_id}, user=${college_id}\n`);
-          
           return res.status(403).json({
             success: false,
             message: 'Unauthorized',
@@ -482,8 +340,6 @@ module.exports = async (req, res) => {
 
         if (application.status !== 'PENDING') {
           clearTimeout(requestTimeout);
-          console.warn(`⚠️  [${requestId}] Application status is '${application.status}', not 'PENDING'\n`);
-          
           return res.status(400).json({
             success: false,
             message: 'Only PENDING applications can be rejected',
@@ -491,22 +347,15 @@ module.exports = async (req, res) => {
           });
         }
 
-        console.log(`✅ [${requestId}] Application verification passed in ${timings.app_check_ms}ms`);
-
-        // Update application status
-        const updateStart = Date.now();
         await client.query(
           `UPDATE student_applications
            SET status = 'REJECTED', rejected_reason = $1, reviewed_at = NOW()
            WHERE id = $2`,
           [rejected_reason || null, application_id]
         );
-        timings.update_ms = Date.now() - updateStart;
-        timings.total_ms = Date.now() - startTime;
 
-        console.log(`✅ [${requestId}] Application rejected in ${timings.update_ms}ms`);
-        console.log(`⏱️  [${requestId}] Total time: ${timings.total_ms}ms`);
-        console.log('='.repeat(80) + '\n');
+        const totalTime = Date.now() - startTime;
+        console.log(`📍 [${requestId}] ✅ Application rejected in ${totalTime}ms`);
 
         clearTimeout(requestTimeout);
 
@@ -514,106 +363,60 @@ module.exports = async (req, res) => {
           success: true,
           message: 'Application rejected successfully',
           requestId,
-          _debug: { timings },
         });
       }
 
-      // ============================================================================
-      // ⚠️ INVALID ACTION
-      // ============================================================================
+      // Invalid action
       clearTimeout(requestTimeout);
-      timings.total_ms = Date.now() - startTime;
-      
-      console.error(`⚠️  [${requestId}] Invalid action: '${action}'\n`);
-      
       return res.status(400).json({
         success: false,
         message: 'Invalid action',
         requestId,
-        _debug: { timings },
       });
 
-    } catch (queryError) {
-      // ============================================================================
-      // 💥 QUERY EXECUTION ERROR
-      // ============================================================================
+    } catch (dbError) {
       clearTimeout(requestTimeout);
-      timings.total_ms = Date.now() - startTime;
+      const elapsed = Date.now() - startTime;
       
-      console.error('\n' + '💥'.repeat(80));
-      console.error(`💥 [${requestId}] QUERY EXECUTION ERROR`);
-      console.error('💥'.repeat(80));
-      console.error(`Error Name: ${queryError.name}`);
-      console.error(`Error Message: ${queryError.message}`);
-      console.error(`Error Code: ${queryError.code || 'N/A'}`);
-      console.error(`SQL State: ${queryError.sqlState || 'N/A'}`);
-      console.error(`Constraint: ${queryError.constraint || 'N/A'}`);
-      console.error(`Detail: ${queryError.detail || 'N/A'}`);
-      console.error(`Hint: ${queryError.hint || 'N/A'}`);
-      console.error(`Position: ${queryError.position || 'N/A'}`);
-      console.error(`\nStack Trace:`);
-      console.error(queryError.stack);
-      console.error(`\nTimings:`, JSON.stringify(timings, null, 2));
-      console.error('💥'.repeat(80) + '\n');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(`📍 [${requestId}] ❌ DATABASE ERROR after ${elapsed}ms`);
+      console.error(`📍 [${requestId}] Error:`, dbError);
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
       if (!res.headersSent) {
         return res.status(500).json({
           success: false,
-          message: 'Database query failed. Please try again.',
+          message: 'Database error occurred. Please try again.',
           requestId,
-          debug: process.env.NODE_ENV === 'development' ? {
-            error: queryError.message,
-            code: queryError.code,
-            timings,
-          } : { requestId },
+          error: process.env.NODE_ENV === 'development' ? dbError.message : undefined,
         });
       }
 
     } finally {
-      // ============================================================================
-      // 🔌 DATABASE CONNECTION CLEANUP
-      // ============================================================================
       if (client) {
-        const releaseStart = Date.now();
         client.release();
-        const releaseTime = Date.now() - releaseStart;
-        console.log(`🔌 [${requestId}] Database connection released in ${releaseTime}ms`);
+        console.log(`📍 [${requestId}] 🔌 Database connection released`);
       }
     }
 
-  } catch (fatalError) {
-    // ============================================================================
-    // 🔥 FATAL UNEXPECTED ERROR
-    // ============================================================================
+  } catch (error) {
     clearTimeout(requestTimeout);
-    timings.total_ms = Date.now() - startTime;
+    const elapsed = Date.now() - startTime;
     
-    console.error('\n' + '🔥'.repeat(80));
-    console.error(`🔥 [${requestId}] FATAL UNEXPECTED ERROR`);
-    console.error('🔥'.repeat(80));
-    console.error(`Error Type: ${fatalError.constructor.name}`);
-    console.error(`Error Message: ${fatalError.message}`);
-    console.error(`\nStack Trace:`);
-    console.error(fatalError.stack);
-    console.error(`\nRequest Details:`);
-    console.error(`   - User ID: ${req.user?.id}`);
-    console.error(`   - College ID: ${req.user?.college_id}`);
-    console.error(`   - Role: ${req.user?.role}`);
-    console.error(`   - Action: ${req.body?.action}`);
-    console.error(`\nTimings:`, JSON.stringify(timings, null, 2));
-    console.error('🔥'.repeat(80) + '\n');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error(`📍 [${requestId}] ❌ FATAL ERROR after ${elapsed}ms`);
+    console.error(`📍 [${requestId}] Error:`, error);
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     if (!res.headersSent) {
       return res.status(500).json({
         success: false,
-        message: 'An unexpected error occurred. Please try again.',
+        message: 'An error occurred processing your request',
         requestId,
-        debug: process.env.NODE_ENV === 'development' ? {
-          error: fatalError.message,
-          type: fatalError.constructor.name,
-          timings,
-        } : { requestId },
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
       });
     }
   }
-};
+});
+
+module.exports = router;
