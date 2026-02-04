@@ -144,7 +144,7 @@ router.post('/', async (req, res) => {
          (session_id, usn, full_name, email, phone, gender, college_id, expires_at)
          VALUES 
          ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [session_id, normalizedUSN, full_name.trim(), normalizedEmail, normalizedPhone , gender, college_id, expires_at]
+        [session_id, normalizedUSN, full_name.trim(), normalizedEmail, normalizedPhone, gender, college_id, expires_at]
       );
 
       const basePath = `${college_code}/${normalizedUSN}/registration`;
