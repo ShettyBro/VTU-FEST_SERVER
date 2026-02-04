@@ -3,6 +3,12 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const nodeCrypto = require('crypto');
+
+// Polyfill for Azure SDK (required in Node runtimes without Web Crypto)
+if (!global.crypto) {
+  global.crypto = nodeCrypto.webcrypto;
+}
+
 const pool = require('../../db/pool');
 const { BlobServiceClient, generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require('@azure/storage-blob');
 
