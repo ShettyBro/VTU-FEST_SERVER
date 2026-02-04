@@ -1,21 +1,21 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../../db/pool');
-const crypto = require('crypto');
+const nodeCrypto = require('crypto');
+
+if (!global.crypto) {
+  global.crypto = nodeCrypto.webcrypto;
+}
+
 const { BlobServiceClient, generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require('@azure/storage-blob');
 const { authenticate } = require('../../middleware/auth');
 const requireRole = require('../../middleware/requireRole');
-const { success, error, validationError } = require('../../utils/response');
 
-// Azure Blob Storage configuration
 const STORAGE_ACCOUNT_NAME = process.env.AZURE_STORAGE_ACCOUNT_NAME;
 const STORAGE_ACCOUNT_KEY = process.env.AZURE_STORAGE_ACCOUNT_KEY;
 const CONTAINER_NAME = 'student-documents';
 const SESSION_EXPIRY_MINUTES = 25;
 
-// ============================================================================
-// HELPER: Generate Azure Blob SAS URL
-// ============================================================================
 const generateSASUrl = (blobPath) => {
   const sharedKeyCredential = new StorageSharedKeyCredential(
     STORAGE_ACCOUNT_NAME,
@@ -25,8 +25,8 @@ const generateSASUrl = (blobPath) => {
   const sasOptions = {
     containerName: CONTAINER_NAME,
     blobName: blobPath,
-    permissions: BlobSASPermissions.parse('w'), // write only
-    startsOn: new Date(Date.now() - 5 * 60 * 1000), // 5 mins ago for clock skew
+    permissions: BlobSASPermissions.parse('w'),
+    startsOn: new Date(Date.now() - 5 * 60 * 1000),
     expiresOn: new Date(Date.now() + SESSION_EXPIRY_MINUTES * 60 * 1000),
     version: '2021-08-06',
   };
@@ -39,74 +39,64 @@ const generateSASUrl = (blobPath) => {
   return `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${blobPath}?${sasToken}`;
 };
 
-// ============================================================================
-// POST /api/manager/manager-profile
-// Multi-action endpoint for manager profile completion
-// ============================================================================
 router.post('/', authenticate, requireRole(['MANAGER']), async (req, res) => {
   const { action } = req.body;
   const { college_id, id: user_id, full_name, phone, email } = req.user;
 
   if (!action) {
-    return validationError(res, 'Action is required');
+    return res.status(400).json({ error: 'Action is required' });
   }
 
+  const client = await pool.connect();
+
   try {
-    // ========================================================================
-    // ACTION: check_profile_status - Check if manager profile completed
-    // ========================================================================
     if (action === 'check_profile_status') {
-      const result = await pool.query(
-        'SELECT id FROM accompanists WHERE college_id = $1 AND is_team_manager = true',
-        [college_id]
+      const userResult = await client.query(
+        'SELECT profile_completed FROM users WHERE id = $1',
+        [user_id]
       );
 
-      return success(res, {
-        profile_completed: result.rows.length > 0,
+      const profile_completed = userResult.rows.length > 0 ? userResult.rows[0].profile_completed : false;
+
+      return res.status(200).json({
+        success: true,
+        profile_completed: profile_completed,
       });
     }
 
-    // ========================================================================
-    // ACTION: init_manager_profile - Initialize profile completion session
-    // ========================================================================
     if (action === 'init_manager_profile') {
-      // Check if profile already completed
-      const existingResult = await pool.query(
-        'SELECT id FROM accompanists WHERE college_id = $1 AND is_team_manager = true',
-        [college_id]
+      const userResult = await client.query(
+        'SELECT profile_completed FROM users WHERE id = $1',
+        [user_id]
       );
 
-      if (existingResult.rows.length > 0) {
-        return error(res, 'Profile already completed', 403);
+      if (userResult.rows.length > 0 && userResult.rows[0].profile_completed) {
+        return res.status(403).json({ error: 'Profile already completed' });
       }
 
-      // Get college info
-      const collegeResult = await pool.query(
+      const collegeResult = await client.query(
         'SELECT college_code, college_name FROM colleges WHERE id = $1',
         [college_id]
       );
 
       if (collegeResult.rows.length === 0) {
-        return error(res, 'College not found', 404);
+        return res.status(404).json({ error: 'College not found' });
       }
 
       const { college_code, college_name } = collegeResult.rows[0];
 
-      // Generate session
-      const session_id = crypto.randomBytes(32).toString('hex');
+      const session_id = nodeCrypto.randomBytes(32).toString('hex');
       const expires_at = new Date(Date.now() + SESSION_EXPIRY_MINUTES * 60 * 1000);
 
-      // Store session (using PENDING placeholders for phone/email since they come from user table)
-      await pool.query(
+      await client.query(
         `INSERT INTO accompanist_sessions (
-          session_id, college_id, full_name, phone, email, 
+          session_id, college_id, user_id, full_name, phone, email, 
           accompanist_type, student_id, expires_at
         )
-        VALUES ($1, $2, $3, 'PENDING', 'PENDING', 'faculty', NULL, $4)`,
-        [session_id, college_id, full_name, expires_at]
+        VALUES ($1, $2, $3, $4, 'PENDING', 'PENDING', 'faculty', NULL, $5)`,
+        [session_id, college_id, user_id, full_name, expires_at]
       );
 
-      // Generate SAS URLs for document uploads
       const blobBasePath = `${college_code}/manager-${full_name.replace(/\s+/g, '_')}`;
       const upload_urls = {
         passport_photo: generateSASUrl(`${blobBasePath}/passport_photo`),
@@ -114,100 +104,115 @@ router.post('/', authenticate, requireRole(['MANAGER']), async (req, res) => {
         aadhaar_card: generateSASUrl(`${blobBasePath}/aadhaar_card`),
       };
 
-      return success(res, {
+      return res.status(200).json({
+        success: true,
         session_id,
         upload_urls,
         expires_at: expires_at.toISOString(),
       });
     }
 
-    // ========================================================================
-    // ACTION: finalize_manager_profile - Complete profile setup
-    // ========================================================================
     if (action === 'finalize_manager_profile') {
       const { session_id } = req.body;
 
       if (!session_id) {
-        return validationError(res, 'session_id is required');
+        return res.status(400).json({ error: 'session_id is required' });
       }
 
-      // Validate session
-      const sessionResult = await pool.query(
+      const sessionResult = await client.query(
         `SELECT expires_at 
          FROM accompanist_sessions 
-         WHERE session_id = $1 AND college_id = $2`,
-        [session_id, college_id]
+         WHERE session_id = $1 AND college_id = $2 AND user_id = $3`,
+        [session_id, college_id, user_id]
       );
 
       if (sessionResult.rows.length === 0) {
-        return error(res, 'Invalid or expired session', 404);
+        return res.status(404).json({ error: 'Invalid or expired session' });
       }
 
       const expires_at = new Date(sessionResult.rows[0].expires_at);
 
       if (Date.now() > expires_at.getTime()) {
-        return error(res, 'Session expired. Please restart.', 400);
+        await client.query(
+          'DELETE FROM accompanist_sessions WHERE session_id = $1',
+          [session_id]
+        );
+        return res.status(400).json({ error: 'Session expired. Please restart.' });
       }
 
-      // Get college info
-      const collegeResult = await pool.query(
+      const collegeResult = await client.query(
         'SELECT college_code, college_name FROM colleges WHERE id = $1',
         [college_id]
       );
 
       const { college_code, college_name } = collegeResult.rows[0];
 
-      // Construct blob URLs
       const blobBasePath = `${college_code}/manager-${full_name.replace(/\s+/g, '_')}`;
       const passport_photo_url = `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${blobBasePath}/passport_photo`;
       const aadhaar_url = `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${blobBasePath}/aadhaar_card`;
       const college_id_card_url = `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${blobBasePath}/college_id_card`;
 
-      // Insert manager as accompanist with is_team_manager = true
-      await pool.query(
-        `INSERT INTO accompanists (
-          college_id,
-          college_name,
-          full_name,
-          phone,
-          email,
-          accompanist_type,
-          passport_photo_url,
-          id_proof_url,
-          college_id_card_url,
-          is_team_manager,
-          created_by_user_id,
-          created_at
-        )
-        VALUES ($1, $2, $3, $4, $5, 'faculty', $6, $7, $8, true, $9, NOW())`,
-        [
-          college_id,
-          college_name,
-          full_name,
-          phone,
-          email,
-          passport_photo_url,
-          aadhaar_url,
-          college_id_card_url,
-          user_id,
-        ]
-      );
+      await client.query('BEGIN');
 
-      // Delete session
-      await pool.query(
-        'DELETE FROM accompanist_sessions WHERE session_id = $1',
-        [session_id]
-      );
+      try {
+        await client.query(
+          `INSERT INTO accompanists (
+            college_id,
+            college_name,
+            full_name,
+            phone,
+            email,
+            accompanist_type,
+            passport_photo_url,
+            id_proof_url,
+            college_id_card_url,
+            is_team_manager,
+            created_by_user_id,
+            created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, 'faculty', $6, $7, $8, true, $9, NOW())`,
+          [
+            college_id,
+            college_name,
+            full_name,
+            phone,
+            email,
+            passport_photo_url,
+            aadhaar_url,
+            college_id_card_url,
+            user_id,
+          ]
+        );
 
-      return success(res, null, 'Profile completed successfully. You are now counted in the 45-person quota.', 201);
+        await client.query(
+          'UPDATE users SET profile_completed = true WHERE id = $1',
+          [user_id]
+        );
+
+        await client.query(
+          'DELETE FROM accompanist_sessions WHERE session_id = $1',
+          [session_id]
+        );
+
+        await client.query('COMMIT');
+
+        return res.status(200).json({
+          success: true,
+          message: 'Profile completed successfully. You are now counted in the 45-person quota.',
+        });
+      } catch (txError) {
+        await client.query('ROLLBACK');
+        throw txError;
+      }
     }
 
-    // Invalid action
-    return validationError(res, 'Invalid action specified');
+    return res.status(400).json({ error: 'Invalid action specified' });
 
   } catch (err) {
     console.error('Manager profile error:', err);
-    return error(res, 'Failed to process manager profile request', 500);
+    return res.status(500).json({ error: 'Failed to process manager profile request' });
+  } finally {
+    client.release();
   }
 });
 
