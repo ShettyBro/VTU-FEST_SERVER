@@ -142,7 +142,7 @@ module.exports = async (req, res) => {
          (session_id, usn, full_name, email, phone, gender, college_id, expires_at)
          VALUES 
          ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [session_id, normalizedUSN, full_name.trim(), normalizedEmail, normalizedPhone, gender, college_id, expires_at]
+        [session_id, normalizedUSN, full_name.trim(), normalizedEmail, normalizedPhone , gender, college_id, expires_at]
       );
 
       const basePath = `${college_code}/${normalizedUSN}/registration`;
@@ -217,9 +217,9 @@ module.exports = async (req, res) => {
 
       await client.query(
         `INSERT INTO students 
-   (college_id, full_name, usn, email, phone, gender, passport_photo_url, password_hash, is_active)
-   VALUES 
-   ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (college_id, full_name, usn, email, phone, gender, passport_photo_url, password_hash, is_active)
+         VALUES 
+         ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [session.college_id, session.full_name, session.usn, session.email, session.phone, session.gender, passport_photo_url, passwordHash, true]
       );
 
