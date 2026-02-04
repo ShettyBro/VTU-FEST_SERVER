@@ -160,14 +160,19 @@ module.exports = async (req, res) => {
     if (action === 'finalize') {
       const { session_id, password } = req.body;
 
+      console.log('[FINALIZE] Starting finalize with session_id:', session_id);
+
       if (!session_id || typeof session_id !== 'string' || !session_id.trim()) {
+        console.log('[FINALIZE] ERROR: Invalid session_id');
         return res.status(400).json({ error: 'Session ID is required' });
       }
 
       if (!password || typeof password !== 'string' || password.length < 8) {
+        console.log('[FINALIZE] ERROR: Invalid password');
         return res.status(400).json({ error: 'Password must be at least 8 characters' });
       }
 
+      console.log('[FINALIZE] Querying registration_sessions...');
       const sessionResult = await client.query(
         `SELECT session_id, usn, full_name, email, phone, gender, college_id, expires_at
          FROM registration_sessions
@@ -175,15 +180,21 @@ module.exports = async (req, res) => {
         [session_id.trim()]
       );
 
+      console.log('[FINALIZE] Session query result:', sessionResult.rows);
+
       if (sessionResult.rows.length === 0) {
+        console.log('[FINALIZE] ERROR: No session found');
         return res.status(400).json({ error: 'Invalid or expired session' });
       }
 
       const session = sessionResult.rows[0];
+      console.log('[FINALIZE] Session data:', session);
+
       const now = new Date();
       const expiryDate = new Date(session.expires_at);
 
       if (now > expiryDate) {
+        console.log('[FINALIZE] ERROR: Session expired');
         await client.query(
           'DELETE FROM registration_sessions WHERE session_id = $1',
           [session_id.trim()]
@@ -192,28 +203,59 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'Session has expired' });
       }
 
+      console.log('[FINALIZE] Querying colleges...');
       const collegeResult = await client.query(
         'SELECT college_code FROM colleges WHERE id = $1',
         [session.college_id]
       );
 
+      console.log('[FINALIZE] College query result:', collegeResult.rows);
+
+      if (collegeResult.rows.length === 0) {
+        console.log('[FINALIZE] ERROR: College not found');
+        return res.status(400).json({ error: 'College not found' });
+      }
+
       const college_code = collegeResult.rows[0].college_code;
       const passportPhotoBlob = `${college_code}/${session.usn}/registration/passport_photo`;
 
+      console.log('[FINALIZE] Checking blob exists:', passportPhotoBlob);
       const photoExists = await blobExists(passportPhotoBlob);
+      console.log('[FINALIZE] Blob exists:', photoExists);
+
       if (!photoExists) {
+        console.log('[FINALIZE] ERROR: Photo not uploaded');
         return res.status(400).json({ error: 'Passport photo not uploaded' });
       }
 
+      console.log('[FINALIZE] Getting blob size...');
       const photoSize = await getBlobSize(passportPhotoBlob);
+      console.log('[FINALIZE] Blob size:', photoSize);
+
       if (photoSize > MAX_FILE_SIZE) {
+        console.log('[FINALIZE] ERROR: Photo too large');
         return res.status(400).json({ error: 'Passport photo exceeds 5MB limit' });
       }
 
+      console.log('[FINALIZE] Hashing password...');
       const passwordHash = await bcrypt.hash(password, 10);
+      console.log('[FINALIZE] Password hashed successfully');
 
       const baseUrl = `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}`;
       const passport_photo_url = `${baseUrl}/${college_code}/${session.usn}/registration/passport_photo`;
+
+      console.log('[FINALIZE] Inserting into students table...');
+      console.log('[FINALIZE] Insert params:', {
+        college_id: session.college_id,
+        full_name: session.full_name,
+        usn: session.usn,
+        email: session.email,
+        phone: session.phone,
+        gender: session.gender,
+        passport_photo_url,
+        passwordHash: '***',
+        is_active: true
+      });
 
       await client.query(
         `INSERT INTO students 
@@ -223,11 +265,15 @@ module.exports = async (req, res) => {
         [session.college_id, session.full_name, session.usn, session.email, session.phone, session.gender, passport_photo_url, passwordHash, true]
       );
 
+      console.log('[FINALIZE] Student inserted successfully');
+
+      console.log('[FINALIZE] Deleting registration session...');
       await client.query(
         'DELETE FROM registration_sessions WHERE session_id = $1',
         [session_id.trim()]
       );
 
+      console.log('[FINALIZE] Registration complete!');
       return res.status(200).json({
         message: 'Registration successful. You can now login with your credentials.',
       });
@@ -235,7 +281,11 @@ module.exports = async (req, res) => {
 
     return res.status(400).json({ error: 'Invalid action' });
   } catch (error) {
-    console.error('Error in student-registration:', error);
+    console.error('[ERROR] Exception in student-registration:', error);
+    console.error('[ERROR] Error message:', error.message);
+    console.error('[ERROR] Error stack:', error.stack);
+    console.error('[ERROR] Error code:', error.code);
+    console.error('[ERROR] Error detail:', error.detail);
 
     return res.status(500).json({ error: 'An error occurred processing your request' });
   } finally {
