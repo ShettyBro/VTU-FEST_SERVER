@@ -1,7 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const auth = require('../middleware/auth');
-const requireRole = require('../middleware/requireRole');
 
 
 // Initialize Express app
