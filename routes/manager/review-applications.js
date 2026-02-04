@@ -19,7 +19,8 @@ module.exports = async (req, res) => {
 
   try {
     if (action === 'list') {
-      const applicationsResult = await client.query(
+      // ✅ OPTIMIZATION: Fetch applications and documents in a SINGLE JOIN query
+      const result = await client.query(
         `SELECT 
            sa.id AS application_id,
            sa.student_id,
@@ -32,40 +33,53 @@ module.exports = async (req, res) => {
            s.email,
            s.phone,
            s.gender,
-           s.passport_photo_url
+           s.passport_photo_url,
+           ad.document_type,
+           ad.document_url
          FROM student_applications sa
          INNER JOIN students s ON sa.student_id = s.id
+         LEFT JOIN application_documents ad ON sa.id = ad.application_id
          WHERE s.college_id = $1
-         ORDER BY sa.submitted_at DESC`,
+         ORDER BY sa.submitted_at DESC, sa.id, ad.id`,
         [college_id]
       );
 
-      const applications = [];
+      // ✅ Group documents by application_id
+      const applicationsMap = new Map();
 
-      for (const app of applicationsResult.rows) {
-        const documentsResult = await client.query(
-          `SELECT document_type, document_url
-           FROM application_documents
-           WHERE application_id = $1`,
-          [app.application_id]
-        );
+      for (const row of result.rows) {
+        const appId = row.application_id;
 
-        applications.push({
-          application_id: app.application_id,
-          student_id: app.student_id,
-          usn: app.usn,
-          full_name: app.full_name,
-          email: app.email,
-          phone: app.phone,
-          gender: app.gender,
-          passport_photo_url: app.passport_photo_url,
-          status: app.status,
-          rejected_reason: app.rejected_reason,
-          submitted_at: app.submitted_at,
-          reviewed_at: app.reviewed_at,
-          documents: documentsResult.rows,
-        });
+        // Initialize application if not exists
+        if (!applicationsMap.has(appId)) {
+          applicationsMap.set(appId, {
+            application_id: appId,
+            student_id: row.student_id,
+            usn: row.usn,
+            full_name: row.full_name,
+            email: row.email,
+            phone: row.phone,
+            gender: row.gender,
+            passport_photo_url: row.passport_photo_url,
+            status: row.status,
+            rejected_reason: row.rejected_reason,
+            submitted_at: row.submitted_at,
+            reviewed_at: row.reviewed_at,
+            documents: [],
+          });
+        }
+
+        // Add document if exists (LEFT JOIN may have nulls)
+        if (row.document_type && row.document_url) {
+          applicationsMap.get(appId).documents.push({
+            document_type: row.document_type,
+            document_url: row.document_url,
+          });
+        }
       }
+
+      // Convert Map to array
+      const applications = Array.from(applicationsMap.values());
 
       return res.status(200).json({
         success: true,
