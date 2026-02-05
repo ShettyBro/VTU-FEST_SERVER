@@ -8,7 +8,6 @@ const pool = require('../../db/pool');
 const { BlobServiceClient, generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require('@azure/storage-blob');
 const { authenticate } = require('../../middleware/auth');
 const requireRole = require('../../middleware/requireRole');
-const checkCollegeLock = require('../../middleware/checkCollegeLock');
 const { success, error, validationError } = require('../../utils/response');
 
 const STORAGE_ACCOUNT_NAME = process.env.AZURE_STORAGE_ACCOUNT_NAME;
@@ -69,7 +68,7 @@ const getBlobSize = async (blobName) => {
   }
 };
 
-router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkCollegeLock, async (req, res) => {
+router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), async (req, res) => {
   const { action } = req.body;
   const { college_id, id: user_id } = req.user;
 
@@ -78,6 +77,13 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkColle
   }
 
   try {
+    const lockCheck = await pool.query(
+      'SELECT is_final_approved FROM colleges WHERE id = $1',
+      [college_id]
+    );
+
+    const isLocked = lockCheck.rows.length > 0 && lockCheck.rows[0].is_final_approved === true;
+
     if (action === 'get_accompanists') {
       const result = await pool.query(
         `SELECT 
@@ -96,7 +102,11 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkColle
         [college_id]
       );
 
-      return success(res, { accompanists: result.rows });
+      return success(res, { accompanists: result.rows, is_locked: isLocked });
+    }
+
+    if (isLocked) {
+      return error(res, 'Final approval has been completed. Edits are not allowed.', 403);
     }
 
     if (action === 'init_accompanist') {
