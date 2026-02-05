@@ -80,8 +80,17 @@ router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
   const client = await pool.connect();
 
   try {
-    // ✅ FIXED: Changed from 'init' to 'init_application' to match frontend
     if (action === 'init_application') {
+      const { blood_group, address, department, year_of_study, semester } = req.body;
+
+      // Validate required fields
+      if (!blood_group || !address || !department || !year_of_study || !semester) {
+        return res.status(400).json({
+          success: false,
+          error: 'All fields are required',
+        });
+      }
+
       const studentResult = await client.query(
         'SELECT usn, reapply_count FROM students WHERE id = $1',
         [student_id]
@@ -108,25 +117,19 @@ router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
 
       if (existingAppResult.rows.length > 0) {
         const existingApp = existingAppResult.rows[0];
+        const latestStatus = existingApp.status;
 
-        if (existingApp.status === 'APPROVED') {
-          return res.status(400).json({
+        if (reapply_count >= 2) {
+          return res.status(403).json({
             success: false,
-            error: 'Application already approved. Cannot resubmit.',
+            error: 'You have been rejected twice. Maximum reapplication limit reached.',
           });
         }
 
-        if (existingApp.status === 'REJECTED' && reapply_count >= 1) {
-          return res.status(400).json({
+        if (latestStatus && ['SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'FINAL_APPROVED'].includes(latestStatus)) {
+          return res.status(403).json({
             success: false,
-            error: 'Reapplication limit reached. You can only reapply once.',
-          });
-        }
-
-        if (existingApp.status === 'PENDING') {
-          return res.status(400).json({
-            success: false,
-            error: 'Application already pending. Cannot submit again.',
+            error: `Cannot apply. Your application is currently ${latestStatus}`,
           });
         }
       }
@@ -155,7 +158,6 @@ router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
         [session_id, student_id, college_id, expires_at]
       );
 
-      // ✅ FIXED: Changed path from 'applications' to 'application' to match Netlify
       const basePath = `${college_code}/${student.usn}/application`;
       const upload_urls = {
         aadhaar: generateSASUrl(`${basePath}/aadhaar`),
@@ -171,9 +173,8 @@ router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Changed from 'finalize' to 'finalize_application' to match Netlify
     if (action === 'finalize_application') {
-      const { session_id } = req.body;
+      const { session_id, blood_group, address, department, year_of_study, semester } = req.body;
 
       if (!session_id || typeof session_id !== 'string' || !session_id.trim()) {
         return res.status(400).json({
@@ -230,7 +231,6 @@ router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
       );
       const college_code = collegeResult.rows[0].college_code;
 
-      // ✅ FIXED: Changed path from 'applications' to 'application'
       const basePath = `${college_code}/${student.usn}/application`;
       const collegeIdCardBlob = `${basePath}/college_id_card`;
       const aadhaarBlob = `${basePath}/aadhaar`;
@@ -307,7 +307,7 @@ router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
         if (existingAppResult.rows.length > 0) {
           const existingApp = existingAppResult.rows[0];
 
-          if (existingApp.status === 'APPROVED') {
+          if (existingApp.status === 'APPROVED' || existingApp.status === 'FINAL_APPROVED') {
             await client.query('ROLLBACK');
             return res.status(400).json({
               success: false,
@@ -315,7 +315,7 @@ router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
             });
           }
 
-          if (existingApp.status === 'PENDING') {
+          if (existingApp.status === 'SUBMITTED' || existingApp.status === 'UNDER_REVIEW') {
             await client.query('ROLLBACK');
             return res.status(400).json({
               success: false,
@@ -325,63 +325,97 @@ router.post('/', authenticate, requireRole(['STUDENT']), async (req, res) => {
 
           if (existingApp.status === 'REJECTED') {
             const reapply_count = student.reapply_count || 0;
-            if (reapply_count >= 1) {
+            if (reapply_count >= 2) {
               await client.query('ROLLBACK');
               return res.status(400).json({
                 success: false,
-                error: 'Reapplication limit reached. You can only reapply once.',
+                error: 'You have been rejected twice. Maximum reapplication limit reached.',
               });
             }
 
-            const insertResult = await client.query(
-              `INSERT INTO student_applications
-               (student_id, status, submitted_at)
-               VALUES
-               ($1, 'PENDING', NOW())
-               RETURNING id`,
-              [student_id]
+            // UPDATE existing application for reapply
+            await client.query(
+              `UPDATE student_applications
+               SET 
+                 blood_group = $1,
+                 address = $2,
+                 department = $3,
+                 year_of_study = $4,
+                 semester = $5,
+                 college_code = $6,
+                 status = 'SUBMITTED',
+                 submitted_at = NOW(),
+                 rejected_reason = NULL,
+                 reviewed_at = NULL
+               WHERE id = $7`,
+              [
+                blood_group,
+                address.trim(),
+                department,
+                parseInt(year_of_study),
+                parseInt(semester),
+                college_code,
+                existingApp.id
+              ]
             );
-            application_id = insertResult.rows[0].id;
+
+            application_id = existingApp.id;
             is_reapply = true;
 
             await client.query(
               'UPDATE students SET reapply_count = $1 WHERE id = $2',
               [reapply_count + 1, student_id]
             );
+
+            // Delete old documents
+            await client.query(
+              'DELETE FROM application_documents WHERE application_id = $1',
+              [application_id]
+            );
           }
         } else {
+          // NEW application - INSERT
           const insertResult = await client.query(
             `INSERT INTO student_applications
-             (student_id, status, submitted_at)
+             (student_id, blood_group, address, department, year_of_study, semester, college_code, status, submitted_at)
              VALUES
-             ($1, 'PENDING', NOW())
+             ($1, $2, $3, $4, $5, $6, $7, 'SUBMITTED', NOW())
              RETURNING id`,
-            [student_id]
+            [
+              student_id,
+              blood_group,
+              address.trim(),
+              department,
+              parseInt(year_of_study),
+              parseInt(semester),
+              college_code
+            ]
           );
           application_id = insertResult.rows[0].id;
         }
 
+        // Insert 3 document records
         await client.query(
           `INSERT INTO application_documents
-           (application_id, document_type, document_url)
+           (application_id, document_type, document_url, uploaded_at)
            VALUES
-           ($1, 'college_id_card', $2)`,
+           ($1, 'COLLEGE_ID', $2, NOW())`,
           [application_id, collegeIdCardUrl]
         );
 
         await client.query(
           `INSERT INTO application_documents
-           (application_id, document_type, document_url)
+           (application_id, document_type, document_url, uploaded_at)
            VALUES
-           ($1, 'aadhaar', $2)`,
+           ($1, 'AADHAR', $2, NOW())`,
           [application_id, aadhaarUrl]
         );
 
         await client.query(
           `INSERT INTO application_documents
-           (application_id, document_type, document_url)
+           (application_id, document_type, document_url, uploaded_at)
            VALUES
-           ($1, 'sslc', $2)`,
+           ($1, 'SSLC', $2, NOW())`,
           [application_id, marksCardUrl]
         );
 
