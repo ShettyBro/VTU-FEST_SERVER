@@ -5,15 +5,13 @@ const { authenticate } = require('../../middleware/auth');
 const requireRole = require('../../middleware/requireRole');
 const { success, error } = require('../../utils/response');
 
-// ============================================================================
-// POST /api/manager/rejected-students
-// Get list of all rejected students for the college
-// ============================================================================
-router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), async (req, res) => {
+router.use(authenticate);
+router.use(requireRole(['MANAGER', 'PRINCIPAL']));
+
+router.post('/', async (req, res) => {
   try {
     const { college_id } = req.user;
 
-    // Fetch all rejected students for the college
     const result = await pool.query(
       `SELECT 
         sa.student_id,
@@ -32,9 +30,7 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), async (req
       [college_id]
     );
 
-    return success(res, {
-      students: result.rows,
-    });
+    return success(res, { students: result.rows });
 
   } catch (err) {
     console.error('Rejected students error:', err);

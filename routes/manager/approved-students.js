@@ -1,213 +1,139 @@
-// routes/manager/approved-students.js
-// ✅ PRODUCTION-READY: Optimized with single JOIN query to prevent N+1 issue
-
 const express = require('express');
 const router = express.Router();
 const pool = require('../../db/pool');
 const { authenticate } = require('../../middleware/auth');
 const requireRole = require('../../middleware/requireRole');
-const { success, error } = require('../../utils/response');
+const { success, error, validationError } = require('../../utils/response');
 
-// Apply middleware
 router.use(authenticate);
 router.use(requireRole(['MANAGER', 'PRINCIPAL']));
 
-// ============================================================================
-// POST /api/manager/approved-students
-// Get all approved students with their documents
-// ============================================================================
 router.post('/', async (req, res) => {
-  // 🔍 DEBUGGING: Track request timing
-  const requestId = `REQ-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const startTime = Date.now();
-  
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`📍 [${requestId}] APPROVED-STUDENTS: Request started`);
-  console.log(`📍 [${requestId}] Timestamp: ${new Date().toISOString()}`);
-  console.log(`📍 [${requestId}] User ID: ${req.user?.id}`);
-  console.log(`📍 [${requestId}] College ID: ${req.user?.college_id}`);
-  console.log(`📍 [${requestId}] Role: ${req.user?.role}`);
-  
-  // ⏱️ TIMEOUT PROTECTION: Respond before Railway's 10s timeout
-  let timeoutOccurred = false;
-  const requestTimeout = setTimeout(() => {
-    timeoutOccurred = true;
-    const elapsed = Date.now() - startTime;
-    console.error(`📍 [${requestId}] ⏱️ TIMEOUT after ${elapsed}ms`);
-    
-    if (!res.headersSent) {
-      res.status(504).json({
-        success: false,
-        message: 'Request timeout. Please contact support if this persists.',
-        requestId,
-        elapsed_ms: elapsed,
-      });
-    }
-  }, 9000); // 9 seconds (before Railway's 10s limit)
+  const { action } = req.body;
+  const { college_id, id: user_id } = req.user;
 
   try {
-    const user_id = req.user.id;
-    const college_id = req.user.college_id;
-    const role = req.user.role;
-
-    if (!user_id || !college_id || !['MANAGER', 'PRINCIPAL'].includes(role)) {
-      clearTimeout(requestTimeout);
-      console.warn(`📍 [${requestId}] ❌ Authorization failed`);
-      return res.status(403).json({
-        success: false,
-        message: 'Unauthorized',
-        requestId,
-      });
-    }
-
-    let client;
-    const dbConnectStart = Date.now();
-    
-    try {
-      console.log(`📍 [${requestId}] 🔌 Acquiring database connection...`);
-      client = await pool.connect();
-      const dbConnectTime = Date.now() - dbConnectStart;
-      console.log(`📍 [${requestId}] ✅ Database connected in ${dbConnectTime}ms`);
-
-      console.log(`📍 [${requestId}] 🔍 Fetching approved students for college ${college_id}...`);
-      
-      const queryStart = Date.now();
-      
-      // ✅ OPTIMIZED QUERY: Single JOIN instead of N+1 queries
-      const result = await client.query(
+    if (action === 'list' || !action) {
+      const result = await pool.query(
         `SELECT 
-           sa.id AS application_id,
-           sa.student_id,
-           sa.status,
-           sa.submitted_at,
-           sa.reviewed_at,
-           s.usn,
-           s.full_name,
-           s.email,
-           s.phone,
-           s.gender,
-           s.passport_photo_url,
-           ad.document_type,
-           ad.document_url
-         FROM student_applications sa
-         INNER JOIN students s ON sa.student_id = s.id
-         LEFT JOIN application_documents ad ON sa.id = ad.application_id
-         WHERE s.college_id = $1
-           AND sa.status = 'APPROVED'
-         ORDER BY s.full_name ASC, sa.id, ad.id
-         LIMIT 10000`,
+          sa.id AS application_id,
+          sa.student_id,
+          s.full_name,
+          s.usn,
+          s.email,
+          s.phone,
+          s.gender,
+          sa.blood_group,
+          sa.address,
+          sa.department,
+          sa.year_of_study,
+          sa.semester,
+          sa.status
+        FROM student_applications sa
+        INNER JOIN students s ON sa.student_id = s.id
+        WHERE s.college_id = $1
+          AND sa.status = 'APPROVED'
+        ORDER BY s.full_name ASC`,
         [college_id]
       );
 
-      const queryTime = Date.now() - queryStart;
-      console.log(`📍 [${requestId}] ✅ Query completed in ${queryTime}ms`);
-      console.log(`📍 [${requestId}] 📊 Rows returned: ${result.rows.length}`);
+      return success(res, { students: result.rows });
+    }
 
-      // ========================================================================
-      // PROCESS RESULTS: Group documents by student
-      // ========================================================================
-      const processingStart = Date.now();
-      const studentsMap = new Map();
+    if (action === 'edit_approved_student_details') {
+      const lockCheck = await pool.query(
+        'SELECT is_final_approved FROM colleges WHERE id = $1',
+        [college_id]
+      );
 
-      for (const row of result.rows) {
-        const studentId = row.student_id;
-
-        if (!studentsMap.has(studentId)) {
-          studentsMap.set(studentId, {
-            application_id: row.application_id,
-            student_id: row.student_id,
-            usn: row.usn,
-            full_name: row.full_name,
-            email: row.email,
-            phone: row.phone,
-            gender: row.gender,
-            passport_photo_url: row.passport_photo_url,
-            status: row.status,
-            submitted_at: row.submitted_at,
-            reviewed_at: row.reviewed_at,
-            documents: [],
-          });
-        }
-
-        if (row.document_type && row.document_url) {
-          studentsMap.get(studentId).documents.push({
-            document_type: row.document_type,
-            document_url: row.document_url,
-          });
-        }
+      if (lockCheck.rows[0]?.is_final_approved) {
+        return error(res, 'Final approval is locked. Cannot edit students.', 403);
       }
 
-      const students = Array.from(studentsMap.values());
-      const processingTime = Date.now() - processingStart;
-      const totalTime = Date.now() - startTime;
+      const {
+        student_id,
+        full_name,
+        email,
+        phone,
+        gender,
+        blood_group,
+        address,
+        department,
+        year_of_study,
+        semester
+      } = req.body;
 
-      console.log(`📍 [${requestId}] ✅ Processing completed in ${processingTime}ms`);
-      console.log(`📍 [${requestId}] 📦 Students processed: ${students.length}`);
-      console.log(`📍 [${requestId}] ⏱️ Total request time: ${totalTime}ms`);
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-      clearTimeout(requestTimeout);
-
-      return res.status(200).json({
-        success: true,
-        students,
-        _debug: {
-          requestId,
-          timings: {
-            db_connect_ms: dbConnectTime,
-            query_ms: queryTime,
-            processing_ms: processingTime,
-            total_ms: totalTime,
-          },
-          counts: {
-            students: students.length,
-            total_rows: result.rows.length,
-          },
-        },
-      });
-
-    } catch (dbError) {
-      clearTimeout(requestTimeout);
-      const elapsed = Date.now() - startTime;
-      
-      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.error(`📍 [${requestId}] ❌ DATABASE ERROR after ${elapsed}ms`);
-      console.error(`📍 [${requestId}] Error:`, dbError);
-      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-      if (!res.headersSent) {
-        return res.status(500).json({
-          success: false,
-          message: 'Database error occurred. Please try again.',
-          requestId,
-          error: process.env.NODE_ENV === 'development' ? dbError.message : undefined,
-        });
+      if (!student_id) {
+        return validationError(res, 'student_id is required');
       }
 
-    } finally {
-      if (client) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        await client.query(
+          `UPDATE students
+           SET full_name = $1, email = $2, phone = $3, gender = $4
+           WHERE id = $5`,
+          [full_name, email, phone, gender, student_id]
+        );
+
+        await client.query(
+          `UPDATE student_applications
+           SET blood_group = $1, address = $2, department = $3, year_of_study = $4, semester = $5
+           WHERE student_id = $6`,
+          [blood_group, address, department, year_of_study, semester, student_id]
+        );
+
+        await client.query('COMMIT');
+        return success(res, { message: 'Student details updated successfully' });
+
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
         client.release();
-        console.log(`📍 [${requestId}] 🔌 Database connection released`);
       }
     }
 
-  } catch (error) {
-    clearTimeout(requestTimeout);
-    const elapsed = Date.now() - startTime;
-    
-    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.error(`📍 [${requestId}] ❌ FATAL ERROR after ${elapsed}ms`);
-    console.error(`📍 [${requestId}] Error:`, error);
-    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    if (action === 'move_to_rejected') {
+      const lockCheck = await pool.query(
+        'SELECT is_final_approved FROM colleges WHERE id = $1',
+        [college_id]
+      );
 
-    if (!res.headersSent) {
-      return res.status(500).json({
-        success: false,
-        message: 'An error occurred processing your request',
-        requestId,
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-      });
+      if (lockCheck.rows[0]?.is_final_approved) {
+        return error(res, 'Final approval is locked. Cannot reject students.', 403);
+      }
+
+      const { student_id, rejection_reason } = req.body;
+
+      if (!student_id || !rejection_reason) {
+        return validationError(res, 'student_id and rejection_reason are required');
+      }
+
+      await pool.query(
+        `UPDATE student_applications
+         SET status = 'REJECTED', rejected_reason = $1, reviewed_at = NOW()
+         WHERE student_id = $2`,
+        [rejection_reason, student_id]
+      );
+
+      await pool.query(
+        `UPDATE students
+         SET reapply_count = reapply_count + 1
+         WHERE id = $1`,
+        [student_id]
+      );
+
+      return success(res, { message: 'Student moved to rejected successfully' });
     }
+
+    return validationError(res, 'Invalid action');
+
+  } catch (err) {
+    console.error('Approved students error:', err);
+    return error(res, 'Failed to process request', 500);
   }
 });
 
