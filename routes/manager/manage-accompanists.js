@@ -1,7 +1,10 @@
 const express = require('express');
 const router = express.Router();
+const nodeCrypto = require('crypto');
+if (!global.crypto) {
+  global.crypto = nodeCrypto.webcrypto;
+}
 const pool = require('../../db/pool');
-const crypto = require('crypto');
 const { BlobServiceClient, generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require('@azure/storage-blob');
 const { authenticate } = require('../../middleware/auth');
 const requireRole = require('../../middleware/requireRole');
@@ -12,6 +15,7 @@ const STORAGE_ACCOUNT_NAME = process.env.AZURE_STORAGE_ACCOUNT_NAME;
 const STORAGE_ACCOUNT_KEY = process.env.AZURE_STORAGE_ACCOUNT_KEY;
 const CONTAINER_NAME = 'student-documents';
 const SESSION_EXPIRY_MINUTES = 25;
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
 const generateSASUrl = (blobPath) => {
   const sharedKeyCredential = new StorageSharedKeyCredential(
@@ -34,6 +38,25 @@ const generateSASUrl = (blobPath) => {
   ).toString();
 
   return `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${blobPath}?${sasToken}`;
+};
+
+const blobExists = async (blobName) => {
+  const blobServiceClient = BlobServiceClient.fromConnectionString(
+    `DefaultEndpointsProtocol=https;AccountName=${STORAGE_ACCOUNT_NAME};AccountKey=${STORAGE_ACCOUNT_KEY};EndpointSuffix=core.windows.net`
+  );
+  const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
+  const blobClient = containerClient.getBlobClient(blobName);
+  return await blobClient.exists();
+};
+
+const getBlobSize = async (blobName) => {
+  const blobServiceClient = BlobServiceClient.fromConnectionString(
+    `DefaultEndpointsProtocol=https;AccountName=${STORAGE_ACCOUNT_NAME};AccountKey=${STORAGE_ACCOUNT_KEY};EndpointSuffix=core.windows.net`
+  );
+  const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
+  const blobClient = containerClient.getBlobClient(blobName);
+  const properties = await blobClient.getProperties();
+  return properties.contentLength;
 };
 
 router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkCollegeLock, async (req, res) => {
@@ -108,7 +131,7 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkColle
 
       const { college_code, college_name } = collegeResult.rows[0];
 
-      const session_id = crypto.randomBytes(32).toString('hex');
+      const session_id = nodeCrypto.randomBytes(32).toString('hex');
       const expires_at = new Date(Date.now() + SESSION_EXPIRY_MINUTES * 60 * 1000);
 
       await pool.query(
@@ -156,6 +179,10 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkColle
       const expires_at = new Date(session.expires_at);
 
       if (Date.now() > expires_at.getTime()) {
+        await pool.query(
+          'DELETE FROM accompanist_sessions WHERE session_id = $1',
+          [session_id]
+        );
         return error(res, 'Session expired. Please restart.', 400);
       }
 
@@ -167,8 +194,31 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkColle
       const { college_code, college_name } = collegeResult.rows[0];
 
       const blobBasePath = `${college_code}/accompanist-details/${session.full_name}_${session.phone}`;
-      const passport_photo_url = `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${blobBasePath}/passport_photo`;
-      const id_proof_url = `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${blobBasePath}/government_id_proof`;
+      const passportPhotoBlob = `${blobBasePath}/passport_photo`;
+      const idProofBlob = `${blobBasePath}/government_id_proof`;
+
+      const passportPhotoExists = await blobExists(passportPhotoBlob);
+      if (!passportPhotoExists) {
+        return error(res, 'Passport photo not uploaded', 400);
+      }
+
+      const idProofExists = await blobExists(idProofBlob);
+      if (!idProofExists) {
+        return error(res, 'Government ID proof not uploaded', 400);
+      }
+
+      const passportPhotoSize = await getBlobSize(passportPhotoBlob);
+      if (passportPhotoSize > MAX_FILE_SIZE) {
+        return error(res, 'Passport photo exceeds 5MB limit', 400);
+      }
+
+      const idProofSize = await getBlobSize(idProofBlob);
+      if (idProofSize > MAX_FILE_SIZE) {
+        return error(res, 'Government ID proof exceeds 5MB limit', 400);
+      }
+
+      const passport_photo_url = `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${passportPhotoBlob}`;
+      const id_proof_url = `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}/${idProofBlob}`;
 
       const insertResult = await pool.query(
         `INSERT INTO accompanists (
