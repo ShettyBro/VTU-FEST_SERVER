@@ -30,7 +30,10 @@ router.post('/', async (req, res) => {
       [college_id]
     );
 
-    return success(res, { students: result.rows });
+    return res.status(200).json({
+      success: true,
+      students: result.rows
+    });
 
   } catch (err) {
     console.error('Rejected students error:', err);

@@ -77,7 +77,10 @@ router.post('/', async (req, res) => {
         });
       }
 
-      return success(res, { applications });
+      return res.status(200).json({
+        success: true,
+        applications
+      });
     }
 
     if (action === 'approve_student') {
