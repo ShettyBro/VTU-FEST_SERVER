@@ -41,22 +41,32 @@ const generateSASUrl = (blobPath) => {
 };
 
 const blobExists = async (blobName) => {
-  const blobServiceClient = BlobServiceClient.fromConnectionString(
-    `DefaultEndpointsProtocol=https;AccountName=${STORAGE_ACCOUNT_NAME};AccountKey=${STORAGE_ACCOUNT_KEY};EndpointSuffix=core.windows.net`
-  );
-  const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
-  const blobClient = containerClient.getBlobClient(blobName);
-  return await blobClient.exists();
+  try {
+    const blobServiceClient = BlobServiceClient.fromConnectionString(
+      `DefaultEndpointsProtocol=https;AccountName=${STORAGE_ACCOUNT_NAME};AccountKey=${STORAGE_ACCOUNT_KEY};EndpointSuffix=core.windows.net`
+    );
+    const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
+    const blobClient = containerClient.getBlobClient(blobName);
+    return await blobClient.exists();
+  } catch (err) {
+    console.error('Blob exists check error:', err);
+    return false;
+  }
 };
 
 const getBlobSize = async (blobName) => {
-  const blobServiceClient = BlobServiceClient.fromConnectionString(
-    `DefaultEndpointsProtocol=https;AccountName=${STORAGE_ACCOUNT_NAME};AccountKey=${STORAGE_ACCOUNT_KEY};EndpointSuffix=core.windows.net`
-  );
-  const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
-  const blobClient = containerClient.getBlobClient(blobName);
-  const properties = await blobClient.getProperties();
-  return properties.contentLength;
+  try {
+    const blobServiceClient = BlobServiceClient.fromConnectionString(
+      `DefaultEndpointsProtocol=https;AccountName=${STORAGE_ACCOUNT_NAME};AccountKey=${STORAGE_ACCOUNT_KEY};EndpointSuffix=core.windows.net`
+    );
+    const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME);
+    const blobClient = containerClient.getBlobClient(blobName);
+    const properties = await blobClient.getProperties();
+    return properties.contentLength;
+  } catch (err) {
+    console.error('Get blob size error:', err);
+    return 0;
+  }
 };
 
 router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkCollegeLock, async (req, res) => {
@@ -159,7 +169,7 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkColle
     if (action === 'finalize_accompanist') {
       const { session_id } = req.body;
 
-      if (!session_id) {
+      if (!session_id || typeof session_id !== 'string' || !session_id.trim()) {
         return validationError(res, 'session_id is required');
       }
 
@@ -168,7 +178,7 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkColle
           full_name, phone, email, accompanist_type, student_id, expires_at
         FROM accompanist_sessions
         WHERE session_id = $1 AND college_id = $2`,
-        [session_id, college_id]
+        [session_id.trim(), college_id]
       );
 
       if (sessionResult.rows.length === 0) {
@@ -181,7 +191,7 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkColle
       if (Date.now() > expires_at.getTime()) {
         await pool.query(
           'DELETE FROM accompanist_sessions WHERE session_id = $1',
-          [session_id]
+          [session_id.trim()]
         );
         return error(res, 'Session expired. Please restart.', 400);
       }
@@ -254,7 +264,7 @@ router.post('/', authenticate, requireRole(['MANAGER', 'PRINCIPAL']), checkColle
 
       await pool.query(
         'DELETE FROM accompanist_sessions WHERE session_id = $1',
-        [session_id]
+        [session_id.trim()]
       );
 
       return success(res, {
