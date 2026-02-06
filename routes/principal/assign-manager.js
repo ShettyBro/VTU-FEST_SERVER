@@ -124,36 +124,60 @@ router.post('/', async (req, res) => {
       [manager_name, manager_email, manager_phone, password_hash, college_id]
     );
     const insertTime = Date.now() - insertStart;
-    console.log(`🔍 [${requestId}] ✅ Manager inserted in ${insertTime}ms`);
+    console.log(`🔍 [${requestId}] ✅ Manager inserted in ${insertTime}ms (not committed yet)`);
 
-    await client.query('COMMIT');
-    console.log(`🔍 [${requestId}] ✅ Transaction committed`);
+    console.log(`🔍 [${requestId}] 📧 Sending email...`);
+    const emailStart = Date.now();
+    
+    try {
+      await transporter.sendMail({
+        from: process.env.FROM_EMAIL,
+        to: manager_email,
+        subject: 'You have been assigned as Team Manager - VTU Fest 2026',
+        html: `
+          <h2>Welcome to VTU Fest 2026!</h2>
+          <p>Dear ${manager_name},</p>
+          <p>You have been assigned as <strong>Team Manager</strong> for your college.</p>
+          <h3>Your Login Credentials:</h3>
+          <ul>
+            <li><strong>Email:</strong> ${manager_email}</li>
+            <li><strong>Password:</strong> ${default_password}</li>
+          </ul>
+          <p><a href="https://vtufest2026.acharyahabba.com/">Login here</a></p>
+          <p><strong>IMPORTANT:</strong> You must change your password on first login.</p>
+          <p>Best regards,<br>VTU Fest Team</p>
+        `,
+      });
+      
+      const emailTime = Date.now() - emailStart;
+      console.log(`🔍 [${requestId}] ✅ Email sent successfully in ${emailTime}ms`);
+      
+      await client.query('COMMIT');
+      console.log(`🔍 [${requestId}] ✅ Transaction committed`);
+      
+    } catch (emailError) {
+      const emailTime = Date.now() - emailStart;
+      console.error(`🔍 [${requestId}] ❌ Email sending failed after ${emailTime}ms:`, emailError.message);
+      
+      await client.query('ROLLBACK');
+      console.log(`🔍 [${requestId}] ↩ Transaction rolled back`);
+      
+      const totalTime = Date.now() - startTime;
+      console.log(`🔍 [${requestId}] ❌ Assignment failed - Total time: ${totalTime}ms`);
+      console.log('┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to send email. Manager assignment cancelled.',
+        details: emailError.message,
+        requestId,
+      });
+    }
 
     const totalTime = Date.now() - startTime;
     console.log(`🔍 [${requestId}] ✅ Manager assigned successfully`);
     console.log(`🔍 [${requestId}] ⏱️ Total request time: ${totalTime}ms`);
     console.log('┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-    transporter.sendMail({
-      from: process.env.FROM_EMAIL,
-      to: manager_email,
-      subject: 'You have been assigned as Team Manager - VTU Fest 2026',
-      html: `
-        <h2>Welcome to VTU Fest 2026!</h2>
-        <p>Dear ${manager_name},</p>
-        <p>You have been assigned as <strong>Team Manager</strong> for your college.</p>
-        <h3>Your Login Credentials:</h3>
-        <ul>
-          <li><strong>Email:</strong> ${manager_email}</li>
-          <li><strong>Password:</strong> ${default_password}</li>
-        </ul>
-        <p><a href="https://vtufest2026.acharyahabba.com/">Login here</a></p>
-        <p><strong>IMPORTANT:</strong> You must change your password on first login.</p>
-        <p>Best regards,<br>VTU Fest Team</p>
-      `,
-    }).catch((emailError) => {
-      console.error(`🔍 [${requestId}] ❌ Email sending failed:`, emailError.message);
-    });
 
     return res.status(200).json({
       success: true,
