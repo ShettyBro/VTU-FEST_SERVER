@@ -1,6 +1,4 @@
 // routes/principal/assign-manager.js
-// ✅ PRODUCTION-READY: Optimized with timeout protection
-
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
@@ -25,6 +23,9 @@ const transporter = nodemailer.createTransport({
   tls: {
     rejectUnauthorized: false,
   },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 10000,
 });
 
 // Apply middleware
@@ -36,7 +37,6 @@ router.use(requireRole(['PRINCIPAL']));
 // Assign a Team Manager to the college
 // ============================================================================
 router.post('/', async (req, res) => {
-  // 🔍 DEBUGGING: Track request timing
   const requestId = `REQ-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const startTime = Date.now();
   
@@ -53,7 +53,6 @@ router.post('/', async (req, res) => {
     const { college_id } = req.user;
     const { manager_name, manager_email, manager_phone } = req.body;
 
-    // Validate required fields
     if (!manager_name || !manager_email || !manager_phone) {
       const totalTime = Date.now() - startTime;
       console.log(`📍 [${requestId}] ❌ Validation failed - Total time: ${totalTime}ms`);
@@ -67,7 +66,6 @@ router.post('/', async (req, res) => {
     const dbConnectTime = Date.now() - dbConnectStart;
     console.log(`📍 [${requestId}] ✅ Database connected in ${dbConnectTime}ms`);
 
-    // Check if Team Manager already exists for this college
     console.log(`📍 [${requestId}] 🔍 Checking for existing manager...`);
     const existingResult = await client.query(
       `SELECT id
@@ -90,7 +88,6 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Check if email already exists
     console.log(`📍 [${requestId}] 🔍 Checking email availability...`);
     const emailCheck = await client.query(
       `SELECT id FROM users WHERE email = $1`,
@@ -109,7 +106,6 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Hash default password: Test@1234
     console.log(`📍 [${requestId}] 🔐 Hashing password...`);
     const hashStart = Date.now();
     const default_password = 'Test@1234';
@@ -117,7 +113,6 @@ router.post('/', async (req, res) => {
     const hashTime = Date.now() - hashStart;
     console.log(`📍 [${requestId}] ✅ Password hashed in ${hashTime}ms`);
 
-    // Insert Team Manager
     console.log(`📍 [${requestId}] 💾 Inserting manager record...`);
     const insertStart = Date.now();
     await client.query(
@@ -128,11 +123,11 @@ router.post('/', async (req, res) => {
     const insertTime = Date.now() - insertStart;
     console.log(`📍 [${requestId}] ✅ Manager inserted in ${insertTime}ms`);
 
-    // Send email with credentials
     console.log(`📍 [${requestId}] 📧 Sending email...`);
     const emailStart = Date.now();
-    try {
-      await transporter.sendMail({
+    
+    setImmediate(() => {
+      transporter.sendMail({
         from: process.env.FROM_EMAIL,
         to: manager_email,
         subject: 'You have been assigned as Team Manager - VTU Fest 2026',
@@ -149,14 +144,14 @@ router.post('/', async (req, res) => {
           <p><strong>IMPORTANT:</strong> You must change your password on first login.</p>
           <p>Best regards,<br>VTU Fest Team</p>
         `,
+      }).then(() => {
+        const emailTime = Date.now() - emailStart;
+        console.log(`📍 [${requestId}] ✅ Email sent in ${emailTime}ms`);
+      }).catch((emailError) => {
+        const emailTime = Date.now() - emailStart;
+        console.error(`📍 [${requestId}] ⚠️ Email sending failed after ${emailTime}ms:`, emailError.message);
       });
-      const emailTime = Date.now() - emailStart;
-      console.log(`📍 [${requestId}] ✅ Email sent in ${emailTime}ms`);
-    } catch (emailError) {
-      const emailTime = Date.now() - emailStart;
-      console.error(`📍 [${requestId}] ⚠️ Email sending failed after ${emailTime}ms:`, emailError.message);
-      // Continue even if email fails
-    }
+    });
 
     const totalTime = Date.now() - startTime;
     console.log(`📍 [${requestId}] ✅ Manager assigned successfully`);
