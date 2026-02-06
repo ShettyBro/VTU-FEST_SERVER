@@ -113,6 +113,10 @@ router.post('/', async (req, res) => {
     const hashTime = Date.now() - hashStart;
     console.log(`📍 [${requestId}] ✅ Password hashed in ${hashTime}ms`);
 
+    // START TRANSACTION
+    console.log(`📍 [${requestId}] 🔄 Starting transaction...`);
+    await client.query('BEGIN');
+
     console.log(`📍 [${requestId}] 💾 Inserting manager record...`);
     const insertStart = Date.now();
     await client.query(
@@ -121,13 +125,14 @@ router.post('/', async (req, res) => {
       [manager_name, manager_email, manager_phone, password_hash, college_id]
     );
     const insertTime = Date.now() - insertStart;
-    console.log(`📍 [${requestId}] ✅ Manager inserted in ${insertTime}ms`);
+    console.log(`📍 [${requestId}] ✅ Manager inserted in ${insertTime}ms (not committed yet)`);
 
+    // SEND EMAIL BEFORE COMMIT
     console.log(`📍 [${requestId}] 📧 Sending email...`);
     const emailStart = Date.now();
     
-    setImmediate(() => {
-      transporter.sendMail({
+    try {
+      await transporter.sendMail({
         from: process.env.FROM_EMAIL,
         to: manager_email,
         subject: 'You have been assigned as Team Manager - VTU Fest 2026',
@@ -144,14 +149,34 @@ router.post('/', async (req, res) => {
           <p><strong>IMPORTANT:</strong> You must change your password on first login.</p>
           <p>Best regards,<br>VTU Fest Team</p>
         `,
-      }).then(() => {
-        const emailTime = Date.now() - emailStart;
-        console.log(`📍 [${requestId}] ✅ Email sent in ${emailTime}ms`);
-      }).catch((emailError) => {
-        const emailTime = Date.now() - emailStart;
-        console.error(`📍 [${requestId}] ⚠️ Email sending failed after ${emailTime}ms:`, emailError.message);
       });
-    });
+      
+      const emailTime = Date.now() - emailStart;
+      console.log(`📍 [${requestId}] ✅ Email sent successfully in ${emailTime}ms`);
+      
+      // EMAIL SENT SUCCESSFULLY - COMMIT TRANSACTION
+      await client.query('COMMIT');
+      console.log(`📍 [${requestId}] ✅ Transaction committed`);
+      
+    } catch (emailError) {
+      const emailTime = Date.now() - emailStart;
+      console.error(`📍 [${requestId}] ❌ Email sending failed after ${emailTime}ms:`, emailError.message);
+      
+      // EMAIL FAILED - ROLLBACK TRANSACTION
+      await client.query('ROLLBACK');
+      console.log(`📍 [${requestId}] ⏪ Transaction rolled back`);
+      
+      const totalTime = Date.now() - startTime;
+      console.log(`📍 [${requestId}] ❌ Assignment failed - Total time: ${totalTime}ms`);
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to send email. Manager assignment cancelled.',
+        details: emailError.message,
+        requestId,
+      });
+    }
 
     const totalTime = Date.now() - startTime;
     console.log(`📍 [${requestId}] ✅ Manager assigned successfully`);
@@ -174,6 +199,16 @@ router.post('/', async (req, res) => {
 
   } catch (err) {
     const elapsed = Date.now() - startTime;
+    
+    // ROLLBACK ON ANY ERROR
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+        console.log(`📍 [${requestId}] ⏪ Transaction rolled back due to error`);
+      } catch (rollbackErr) {
+        console.error(`📍 [${requestId}] ❌ Rollback failed:`, rollbackErr.message);
+      }
+    }
     
     console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.error(`📍 [${requestId}] ❌ ERROR after ${elapsed}ms`);
